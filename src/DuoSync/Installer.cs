@@ -24,7 +24,7 @@ static class Installer
         try
         {
             Directory.CreateDirectory(AutoStart.InstallDir);
-            if (!File.Exists(InstalledExe) || !SameFile(source, InstalledExe))
+            if (!File.Exists(InstalledExe) || (!SameFile(source, InstalledExe) && !IsNewer(InstalledExe)))
             {
                 SingleInstance.AskRunningToQuit(TimeSpan.FromSeconds(8));
                 if (File.Exists(InstalledExe))
@@ -46,8 +46,33 @@ static class Installer
         return true;
     }
 
-    /// <summary>Left over from a replacement: deletable once the old process has exited.</summary>
-    public static void CleanupOldCopy() => TryDelete(Path.Combine(AutoStart.InstallDir, "DuoSync.old.exe"));
+    /// <summary>
+    /// Leftovers of updates: a stale staged exe, versions that failed a week ago, downloads of installed versions.
+    /// DuoSync.old.exe stays until the next update: it is what a failed version rolls back to.
+    /// </summary>
+    public static void CleanupLeftovers()
+    {
+        if (!AutoStart.IsInstalledCopy) return;
+        TryDelete(Path.Combine(AutoStart.InstallDir, "DuoSync.new.exe"));
+        foreach (var bad in Directory.EnumerateFiles(AutoStart.InstallDir, "DuoSync.bad-*.exe"))
+            if (File.GetLastWriteTimeUtc(bad) < DateTime.UtcNow.AddDays(-7)) TryDelete(bad);
+        var updates = Path.Combine(AutoStart.InstallDir, "updates");
+        if (!Directory.Exists(updates)) return;
+        foreach (var dir in Directory.EnumerateDirectories(updates))
+            if (Version.TryParse(Path.GetFileName(dir), out var v) && v <= UpdateGuard.Current)
+            {
+                try { Directory.Delete(dir, recursive: true); }
+                catch (IOException) { }
+                catch (UnauthorizedAccessException) { }
+            }
+    }
+
+    /// <summary>An old exe from Downloads must not replace a newer installed copy: it only starts that copy.</summary>
+    static bool IsNewer(string installedExe)
+    {
+        var info = System.Diagnostics.FileVersionInfo.GetVersionInfo(installedExe);
+        return new Version(info.FileMajorPart, info.FileMinorPart, info.FileBuildPart) > UpdateGuard.Current;
+    }
 
     static bool SameFile(string a, string b)
     {

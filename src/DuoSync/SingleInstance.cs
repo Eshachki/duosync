@@ -14,6 +14,25 @@ static class SingleInstance
     static string ShowEventName => @"Local\DuoSync.Show." + Key;
     static string QuitEventName => @"Local\DuoSync.Quit." + Key;
 
+    static ManualResetEvent? _stop;
+
+    /// <summary>Takes the single-instance mutex, waiting up to <paramref name="wait"/> for a copy that is exiting (update).</summary>
+    public static Mutex? Acquire(TimeSpan wait)
+    {
+        var until = DateTime.UtcNow + wait;
+        while (true)
+        {
+            var mutex = new Mutex(true, MutexName, out bool created);
+            if (created) return mutex;
+            mutex.Dispose();
+            if (DateTime.UtcNow >= until) return null;
+            Thread.Sleep(250);
+        }
+    }
+
+    /// <summary>Stops listening, so show/quit requests reach the new copy while this one watches an update.</summary>
+    public static void Stop() => _stop?.Set();
+
     public static void AskRunningToShow()
     {
         if (EventWaitHandle.TryOpenExisting(ShowEventName, out var ev)) using (ev) ev.Set();
@@ -38,14 +57,18 @@ static class SingleInstance
     {
         var showEvent = new EventWaitHandle(false, EventResetMode.AutoReset, ShowEventName);
         var quitEvent = new EventWaitHandle(false, EventResetMode.AutoReset, QuitEventName);
+        var stop = _stop = new ManualResetEvent(false);
         var thread = new Thread(() =>
         {
-            var handles = new WaitHandle[] { showEvent, quitEvent };
+            var handles = new WaitHandle[] { showEvent, quitEvent, stop };
             while (true)
             {
                 var i = WaitHandle.WaitAny(handles);
-                if (i == 0) ui.Post(_ => show(), null);
-                else { ui.Post(_ => quit(), null); return; }
+                if (i == 0) { ui.Post(_ => show(), null); continue; }
+                if (i == 1) ui.Post(_ => quit(), null);
+                showEvent.Dispose();
+                quitEvent.Dispose();
+                return;
             }
         }) { IsBackground = true, Name = "DuoSync single instance" };
         thread.Start();

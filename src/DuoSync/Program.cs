@@ -2,23 +2,40 @@ namespace DuoSync;
 
 static class Program
 {
+    static Mutex? _instance;
+
     [STAThread]
     static int Main(string[] args)
     {
         if (args.Length > 0 && args[0] == "--cli") return Cli.Run(args);
+        UpdateGuard.OnStartup();
         ApplicationConfiguration.Initialize();
         if (Installer.InstallAndRelaunch(args)) return 0;
 
-        using var mutex = new Mutex(true, SingleInstance.MutexName, out bool first);
-        if (!first)
+        // After an update the old copy is still handing over: wait for its mutex instead of showing it.
+        _instance = SingleInstance.Acquire(args.Contains("--after-update") ? TimeSpan.FromSeconds(30) : TimeSpan.Zero);
+        if (_instance == null)
         {
             SingleInstance.AskRunningToShow();
             return 0;
         }
-        Installer.CleanupOldCopy();
-        var snapshot = ArgValue(args, "--snapshot");
-        Application.Run(new TrayContext(showWindow: !args.Contains("--tray"), snapshotPath: snapshot));
+        try
+        {
+            Installer.CleanupLeftovers();
+            var snapshot = ArgValue(args, "--snapshot");
+            Application.Run(new TrayContext(showWindow: !args.Contains("--tray"), snapshotPath: snapshot));
+        }
+        finally { ReleaseInstance(); }
         return 0;
+    }
+
+    /// <summary>Frees the single-instance mutex early: an update hands it to the new copy while this one watches.</summary>
+    public static void ReleaseInstance()
+    {
+        var mutex = Interlocked.Exchange(ref _instance, null);
+        if (mutex == null) return;
+        try { mutex.ReleaseMutex(); } catch (ApplicationException) { }
+        mutex.Dispose();
     }
 
     static string? ArgValue(string[] args, string name)

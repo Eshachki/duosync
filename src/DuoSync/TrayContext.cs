@@ -5,6 +5,7 @@ using DuoSync.Core.GitHub;
 using DuoSync.Core.Ops;
 using DuoSync.Core.Setup;
 using DuoSync.Core.Unity;
+using DuoSync.Core.Updates;
 
 namespace DuoSync;
 
@@ -18,6 +19,8 @@ sealed class TrayContext : ApplicationContext
     public event Action? AvailableChanged;
 
     static readonly TimeSpan DiscoveryInterval = TimeSpan.FromMinutes(10);
+    static readonly TimeSpan UpdateInterval = TimeSpan.FromHours(6);
+    static readonly TimeSpan[] UpdateRetryDelays = { TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(90) };
 
     readonly NotifyIcon _tray;
     readonly System.Windows.Forms.Timer _timer;
@@ -28,6 +31,11 @@ sealed class TrayContext : ApplicationContext
     GitHubClient? _github;
     /// <summary>What a click on the current balloon does.</summary>
     Action _balloonClick;
+    DateTime _nextUpdateCheck = DateTime.UtcNow.AddMinutes(2);
+    Task? _updateCheck;
+    (ReleaseInfo Release, string Exe)? _ready;
+    bool _installing;
+    DateTime _lastActive = DateTime.MinValue;
 
     public TrayContext(bool showWindow, string? snapshotPath = null)
     {
@@ -42,7 +50,9 @@ sealed class TrayContext : ApplicationContext
         _tray.DoubleClick += (_, _) => ShowWindow();
         _tray.BalloonTipClicked += (_, _) => _balloonClick();
         RebuildMenu();
-        SingleInstance.Listen(SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext(), () => ShowWindow(), ExitThread);
+        var ui = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
+        SingleInstance.Listen(ui, () => ShowWindow(), ExitThread);
+        ui.Post(_ => AfterStart(), null);
 
         _timer = new System.Windows.Forms.Timer { Interval = Math.Max(15, Settings.PollSeconds) * 1000 };
         _timer.Tick += async (_, _) => await PollAsync();
@@ -50,6 +60,18 @@ sealed class TrayContext : ApplicationContext
 
         if (showWindow || Controllers.Count == 0 || snapshotPath != null) ShowWindow();
         _ = snapshotPath == null ? PollAsync() : SnapshotAndExitAsync(snapshotPath);
+    }
+
+    /// <summary>The message loop runs: confirm a fresh update to its watchdog and say what changed, or why it was undone.</summary>
+    void AfterStart()
+    {
+        if (UpdateGuard.ConfirmStarted() is { } updated)
+        {
+            var text = $"DuoSync обновлён до {updated.Version}." + (updated.Notes.Count > 0 ? " " + string.Join(" ", updated.Notes) : "");
+            Notify("DuoSync", text.Length > 250 ? text[..247] + "…" : text);
+        }
+        else if (UpdateGuard.TakeRollbackNotice() is { } notice)
+            Notify("DuoSync", notice, ToolTipIcon.Warning);
     }
 
     /// <summary>The friend in messages, always in the nominative («{имя} отправил», «прислал {имя}»).</summary>
@@ -148,6 +170,7 @@ sealed class TrayContext : ApplicationContext
             _nextDiscovery = DateTime.UtcNow + DiscoveryInterval;
             await DiscoverAsync();
         }
+        MaybeUpdate();
     }
 
     void MaybeNotify(ProjectController c)
@@ -240,6 +263,12 @@ sealed class TrayContext : ApplicationContext
             await PollAsync();
         });
         menu.Items.Add("Имена…", null, (_, _) => EditNames());
+        if (UpdateGuard.Enabled)
+        {
+            if (_ready is { } ready)
+                menu.Items.Add($"Установить обновление {ready.Release.Version.ToString(3)} (перезапуск)", null, (_, _) => Guard(() => InstallUpdateAsync(manual: true)));
+            menu.Items.Add($"Проверить обновления (версия {UpdateGuard.Current.ToString(3)})", null, (_, _) => Guard(() => CheckForUpdateAsync(manual: true)));
+        }
         if (AutoStart.IsInstalledCopy)
         {
             var auto = new ToolStripMenuItem("Запускать вместе с Windows") { Checked = Settings.AutoStart, CheckOnClick = true };
@@ -275,6 +304,94 @@ sealed class TrayContext : ApplicationContext
             Controllers.Add(new ProjectController(p, Settings));
         _form?.ReloadProjects();
         _ = PollAsync();
+    }
+
+    // ------------------------------------------------------------------ Обновление программы
+
+    /// <summary>Check 2 minutes after start and then every 6 hours; install the downloaded version when idle (§8а).</summary>
+    void MaybeUpdate()
+    {
+        if (!UpdateGuard.Enabled || _installing) return;
+        if (_ready == null && (_updateCheck == null || _updateCheck.IsCompleted) && DateTime.UtcNow >= _nextUpdateCheck)
+        {
+            _nextUpdateCheck = DateTime.UtcNow + UpdateInterval;
+            _updateCheck = CheckForUpdateAsync(manual: false);
+        }
+        if (_ready != null && IsIdle()) _ = InstallUpdateAsync(manual: false);
+    }
+
+    async Task CheckForUpdateAsync(bool manual)
+    {
+        try
+        {
+            var latest = await Task.Run(() => ReleaseFeed.LatestAsync());
+            var current = UpdateGuard.Current;
+            if (latest == null || latest.Version <= current)
+            {
+                if (manual) Notify("DuoSync", $"Обновлений нет: у тебя последняя версия {current.ToString(3)}.");
+                return;
+            }
+            var version = latest.Version.ToString(3);
+            if (UpdateGuard.IsBad(latest.Version))
+            {
+                if (manual) Notify("DuoSync", $"Версия {version} у тебя не запустилась, программа ждёт исправленную.", ToolTipIcon.Warning);
+                return;
+            }
+            if (manual) Notify("DuoSync", $"Скачиваю обновление {version}…", milliseconds: 5_000);
+            var dir = Path.Combine(AutoStart.InstallDir, "updates", version);
+            var exe = await Task.Run(() => ReleaseFeed.DownloadAsync(latest, dir, UpdateRetryDelays));
+            _ready = (latest, exe);
+            RebuildMenu();
+            if (manual) await InstallUpdateAsync(manual: true);
+        }
+        catch (Exception e) when (e is HttpRequestException or IOException or TimeoutException or InvalidDataException or JsonException
+                                      or FormatException or ArgumentException or KeyNotFoundException or InvalidOperationException or UnauthorizedAccessException)
+        {
+            if (manual) Notify("DuoSync", "Не получилось проверить обновления: " + e.Message, ToolTipIcon.Warning);
+        }
+    }
+
+    /// <summary>Nothing runs and the person has not been in the window for 2 minutes: time to restart into the new version.</summary>
+    bool IsIdle()
+    {
+        if (Controllers.Any(c => c.Busy)) return false;
+        if (Application.OpenForms.Count > (_form is { IsDisposed: false } ? 1 : 0)) return false; // a prompt is open
+        if (_form is { IsDisposed: false, Visible: true } f && (f.ContainsFocus || !f.Enabled)) _lastActive = DateTime.UtcNow;
+        return DateTime.UtcNow - _lastActive > TimeSpan.FromMinutes(2);
+    }
+
+    async Task InstallUpdateAsync(bool manual)
+    {
+        if (_installing || _ready is not { } ready) return;
+        if (Controllers.Any(c => c.Busy))
+        {
+            if (manual) Notify("DuoSync", $"Обновление {ready.Release.Version.ToString(3)} скачано, поставлю после текущей операции.");
+            return;
+        }
+        _installing = true;
+        _timer.Stop();
+        var handedOver = false;
+        try
+        {
+            await UpdateGuard.InstallAsync(ready.Exe, ready.Release, showWindow: _form is { IsDisposed: false, Visible: true }, () =>
+            {
+                handedOver = true;
+                SingleInstance.Stop();
+                Program.ReleaseInstance();
+                _tray.Visible = false;
+                _form?.Hide();
+            });
+        }
+        catch (Exception e) when (!handedOver && e is IOException or UnauthorizedAccessException or InvalidDataException)
+        {
+            _installing = false;
+            _ready = null;
+            _timer.Start();
+            RebuildMenu();
+            Notify("DuoSync", "Обновление не установилось: " + e.Message, ToolTipIcon.Warning);
+            return;
+        }
+        ExitThread();
     }
 
     // ------------------------------------------------------------------ Проекты на GitHub
