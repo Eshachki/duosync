@@ -484,3 +484,6 @@ $RECYCLE.BIN/
 # DuoSync: private design docs stay local (the program repo is public)
 /docs/private/
 /DuoSync-*.md
+
+# Unity .meta files of the bridge package must be versioned (fixed GUIDs)
+!/bridge/**/*.meta
