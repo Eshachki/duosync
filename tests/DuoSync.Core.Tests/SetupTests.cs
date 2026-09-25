@@ -66,12 +66,14 @@ public class SetupTests : IDisposable
     [Fact]
     public async Task Foreign_merge_driver_is_disabled_and_own_lines_stay()
     {
-        var repo = await UnpreparedCloneAsync("*.unity merge=unityyamlmerge\n*.custom binary\n");
+        var repo = await UnpreparedCloneAsync("*.unity merge=unityyamlmerge\n*.custom binary\n*.asset filter=tidy\n*.bin filter=lfs -text\n");
 
         await new ProjectSetup(repo, "Аня", "Боря").ApplyAsync();
 
         var text = File.ReadAllText(Path.Combine(repo.Root, ".gitattributes")).Replace("\r\n", "\n");
         Assert.Contains("# DuoSync: отключено: *.unity merge=unityyamlmerge", text);
+        Assert.Contains("# DuoSync: отключено: *.asset filter=tidy", text);
+        Assert.Contains("\n*.bin filter=lfs -text\n", "\n" + text);
         Assert.Contains("\n*.custom binary\n", "\n" + text);
         Assert.Contains(Templates.BlockStart, text);
         var info = File.ReadAllText(Path.Combine(await repo.GitDirAsync(), "info", "attributes"));

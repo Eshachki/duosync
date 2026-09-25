@@ -22,6 +22,11 @@ public sealed class ProjectSetup
     const string LocalStampName = "local-setup.v1";
 
     static readonly string[] DisabledPatterns = { "merge=unityyamlmerge", "merge=lfs" };
+    /// <summary>
+    /// Any clean/smudge filter except LFS: it runs only where it is installed, so the two computers would see
+    /// different contents of the same file.
+    /// </summary>
+    static readonly System.Text.RegularExpressions.Regex ForeignFilter = new(@"(^|\s)filter=(?!lfs(\s|$))\S+");
 
     readonly Repo _repo;
     readonly string _me;
@@ -218,7 +223,8 @@ public sealed class ProjectSetup
             var l = lines[i];
             if (l.StartsWith(Templates.BlockStart, StringComparison.Ordinal)) inBlock = true;
             else if (l.StartsWith(Templates.BlockEnd, StringComparison.Ordinal)) inBlock = false;
-            else if (!inBlock && !l.TrimStart().StartsWith('#') && DisabledPatterns.Any(p => l.Contains(p, StringComparison.Ordinal)))
+            else if (!inBlock && !l.TrimStart().StartsWith('#') &&
+                     (DisabledPatterns.Any(p => l.Contains(p, StringComparison.Ordinal)) || ForeignFilter.IsMatch(l)))
                 lines[i] = "# DuoSync: отключено: " + l;
         }
         return string.Join("\n", lines);
