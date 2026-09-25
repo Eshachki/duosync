@@ -145,4 +145,19 @@ public sealed class Repo
             .Take(max)
             .ToList();
     }
+
+    /// <summary>Latest author on <paramref name="rev"/> other than this person: the friend's name when none is set.</summary>
+    public async Task<string?> OtherAuthorAsync(string rev, string meName, string meEmail, int max = 200)
+    {
+        var r = await Git.RunAsync("log", "-z", $"-n{max}", "--format=%an%x1f%ae", rev);
+        if (!r.Ok) return null;
+        foreach (var rec in GitParse.SplitZ(r.StdOutBytes))
+        {
+            var f = rec.Trim('\r', '\n').Split('\x1f');
+            if (f.Length < 2 || f[0].Length == 0) continue;
+            if (!string.Equals(f[0], meName, StringComparison.OrdinalIgnoreCase) && !string.Equals(f[1], meEmail, StringComparison.OrdinalIgnoreCase))
+                return f[0];
+        }
+        return null;
+    }
 }

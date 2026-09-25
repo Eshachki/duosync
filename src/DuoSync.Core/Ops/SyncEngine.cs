@@ -9,7 +9,8 @@ namespace DuoSync.Core.Ops;
 public sealed class SyncOptions
 {
     public required string MeName { get; init; }
-    public required string FriendName { get; init; }
+    /// <summary>Settable: the name is learned from the repository when nobody typed it.</summary>
+    public required string FriendName { get; set; }
     /// <summary>Run <c>git lfs push</c> before push (off in tests without LFS).</summary>
     public bool PushLfs { get; init; } = true;
     /// <summary>Pauses before repeating a network step after a dropped connection (GitHub from Russia drops often).</summary>

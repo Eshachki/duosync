@@ -9,6 +9,8 @@ sealed class MainForm : Form
     readonly TrayContext _app;
     readonly ComboBox _projects = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 260 };
     readonly Button _add = new() { Text = "Добавить проект…", AutoSize = true };
+    /// <summary>Projects on GitHub that are not on this computer: one «Скачать» button each.</summary>
+    readonly FlowLayoutPanel _available = new() { Dock = DockStyle.Fill, AutoSize = true, Visible = false };
     readonly Label _incoming = new() { AutoSize = true, Font = new Font("Segoe UI", 10.5f, FontStyle.Bold) };
     readonly Label _unsent = new() { AutoSize = true };
     readonly Button _receive = new() { Text = "Получить", Width = 150, Height = 36 };
@@ -39,6 +41,7 @@ sealed class MainForm : Form
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, Padding = new Padding(12) };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         layout.Controls.Add(top);
+        layout.Controls.Add(_available);
         layout.Controls.Add(_incoming);
         layout.Controls.Add(_unsent);
         layout.Controls.Add(buttons);
@@ -46,12 +49,14 @@ sealed class MainForm : Form
         layout.Controls.Add(_result);
         layout.Controls.Add(new Label { Text = "Лента проекта", AutoSize = true, ForeColor = Color.DimGray });
         layout.Controls.Add(_feed);
-        for (int i = 0; i < 7; i++) layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        for (int i = 0; i < 8; i++) layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         Controls.Add(layout);
 
         _projects.SelectedIndexChanged += async (_, _) => await ShowProjectAsync();
-        _add.Click += (_, _) => _app.AddProjectInteractive(this);
+        _add.Click += (_, _) => _app.Guard(() => _app.AddProjectInteractiveAsync(this));
+        _app.AvailableChanged += RenderAvailable;
+        Disposed += (_, _) => _app.AvailableChanged -= RenderAvailable;
         _receive.Click += async (_, _) => await RunAsync(e => e.ReceiveAsync());
         _send.Click += async (_, _) =>
         {
@@ -74,6 +79,47 @@ sealed class MainForm : Form
             if (e.CloseReason == CloseReason.UserClosing) { e.Cancel = true; Hide(); }
         };
         ReloadProjects();
+        RenderAvailable();
+    }
+
+    void RenderAvailable()
+    {
+        if (IsDisposed) return;
+        if (InvokeRequired) { BeginInvoke(new Action(RenderAvailable)); return; }
+        _available.SuspendLayout();
+        _available.Controls.Clear();
+        var list = _app.Available;
+        if (list.Count > 0)
+        {
+            _available.Controls.Add(new Label
+            {
+                Text = list.Count == 1 ? "На GitHub есть проект, которого у тебя нет:" : "На GitHub есть проекты, которых у тебя нет:",
+                AutoSize = true, Padding = new Padding(0, 9, 0, 0),
+            });
+            foreach (var p in list.Take(4))
+            {
+                var project = p;
+                var button = new Button { Text = $"Скачать «{project.Name}»", AutoSize = true, Height = 34 };
+                button.Click += (_, _) => _app.Guard(() => _app.DownloadAsync(this, project));
+                _available.Controls.Add(button);
+            }
+        }
+        _available.Visible = list.Count > 0;
+        _available.ResumeLayout();
+        if (Current == null) Render();
+    }
+
+    public void SelectProject(ProjectController controller)
+    {
+        for (int i = 0; i < _projects.Items.Count; i++)
+            if (_projects.Items[i] is ProjectItem item && item.Controller == controller) _projects.SelectedIndex = i;
+    }
+
+    /// <summary>A line under the buttons for things that are not an operation of the current project (downloads).</summary>
+    public void ShowNote(string text, bool error = false)
+    {
+        _result.Text = text;
+        _result.ForeColor = error ? Color.FromArgb(170, 30, 30) : Color.DimGray;
     }
 
     void FitLabels()
@@ -86,7 +132,7 @@ sealed class MainForm : Form
     {
         var c = Current;
         if (c == null || c.Busy) return;
-        var setup = new DuoSync.Core.Setup.ProjectSetup(c.Engine.Repo, _app.Settings.MeName, _app.Settings.FriendName);
+        var setup = new DuoSync.Core.Setup.ProjectSetup(c.Engine.Repo, _app.Settings.MeName, _app.Settings.FriendDisplay);
         var plan = await setup.PlanAsync();
         var nl = Environment.NewLine;
         var text = "Что изменится (одним коммитом у тебя, на GitHub уйдёт при «Отправить»):" + nl + nl +
@@ -157,12 +203,14 @@ sealed class MainForm : Form
         _check.Enabled = _prepare.Enabled = enabled;
         if (c == null)
         {
-            _incoming.Text = "Проектов пока нет. Нажми «Добавить проект…».";
+            _incoming.Text = _app.Available.Count > 0
+                ? "Проектов на этом компьютере пока нет. Скачай проект кнопкой выше."
+                : "Проектов пока нет. Нажми «Добавить проект…».";
             _unsent.Text = "";
             return;
         }
         var st = c.Status;
-        var friend = _app.Settings.FriendName;
+        var friend = _app.Friend;
         _incoming.ForeColor = Icons.ColorOf(st?.State ?? SyncState.Busy);
         _incoming.Text = c.Busy ? "Идёт операция… " + (c.Progress ?? "") : st?.State switch
         {

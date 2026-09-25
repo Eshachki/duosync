@@ -9,6 +9,7 @@ sealed class ProjectController
 {
     public ProjectEntry Entry { get; }
     public SyncEngine Engine { get; }
+    public SyncOptions Options { get; }
     public ProjectStatus? Status { get; private set; }
     public bool Busy { get; private set; }
     public OpResult? LastResult { get; private set; }
@@ -20,12 +21,13 @@ sealed class ProjectController
     {
         Entry = entry;
         var git = new GitRunner(entry.Path, settings.MeName, settings.MeEmail);
-        Engine = new SyncEngine(new Repo(git), new SyncOptions
+        Options = new SyncOptions
         {
             MeName = settings.MeName,
-            FriendName = settings.FriendName,
+            FriendName = settings.FriendDisplay,
             Progress = line => { Progress = line; Changed?.Invoke(); },
-        }, new DuoSync.Core.Unity.UnityBridgeClient(entry.Path));
+        };
+        Engine = new SyncEngine(new Repo(git), Options, new DuoSync.Core.Unity.UnityBridgeClient(entry.Path));
     }
 
     public async Task RefreshAsync()

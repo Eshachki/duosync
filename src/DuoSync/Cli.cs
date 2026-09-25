@@ -13,9 +13,10 @@ static class Cli
     public static int Run(string[] args)
     {
         Console.OutputEncoding = System.Text.Encoding.UTF8;
+        if (args.Length == 2 && args[1] == "projects") return Projects();
         if (args.Length < 3)
         {
-            Console.Error.WriteLine("usage: --cli prepare|receive|send|undo|status <folder> [message]");
+            Console.Error.WriteLine("usage: --cli prepare|receive|send|undo|status|unity <folder> [message] | --cli projects");
             return 2;
         }
         var settings = AppSettings.Load();
@@ -67,5 +68,21 @@ static class Cli
         if (!string.IsNullOrWhiteSpace(result.Detail)) Console.WriteLine("detail: " + result.Detail.Trim());
         if (result.ConflictedPaths.Count > 0) Console.WriteLine("conflicts: " + string.Join(", ", result.ConflictedPaths));
         return result.Succeeded ? 0 : 1;
+    }
+
+    /// <summary>Debug: what project discovery sees with the stored GitHub login (never prints the token).</summary>
+    static int Projects()
+    {
+        var github = DuoSync.Core.GitHub.GitHubClient.ConnectAsync(interactive: false).GetAwaiter().GetResult();
+        if (github == null)
+        {
+            Console.WriteLine("no stored GitHub login");
+            return 1;
+        }
+        Console.WriteLine("login: " + github.LoginAsync().GetAwaiter().GetResult());
+        Console.WriteLine("organizations: " + string.Join(", ", github.OrganizationsAsync().GetAwaiter().GetResult()));
+        foreach (var p in github.ProjectsAsync().GetAwaiter().GetResult())
+            Console.WriteLine($"project: {p.FullName}  pushed {p.PushedAt.ToLocalTime():dd.MM.yyyy HH:mm}");
+        return 0;
     }
 }
