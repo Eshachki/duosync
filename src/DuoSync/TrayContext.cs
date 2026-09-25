@@ -143,6 +143,7 @@ sealed class TrayContext : ApplicationContext
         }
         catch (Exception e)
         {
+            AppLog.Error("action", e);
             MessageBox.Show(VisibleForm, "Ошибка: " + e.Message, "DuoSync", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
@@ -326,6 +327,7 @@ sealed class TrayContext : ApplicationContext
         {
             var latest = await Task.Run(() => ReleaseFeed.LatestAsync());
             var current = UpdateGuard.Current;
+            AppLog.Write($"update check{(manual ? " (button)" : "")}: latest {latest?.Version.ToString(3) ?? "none"}, mine {current.ToString(3)}");
             if (latest == null || latest.Version <= current)
             {
                 if (manual) Notify("DuoSync", $"Обновлений нет: у тебя последняя версия {current.ToString(3)}.");
@@ -339,7 +341,8 @@ sealed class TrayContext : ApplicationContext
             }
             if (manual) Notify("DuoSync", $"Скачиваю обновление {version}…", milliseconds: 5_000);
             var dir = Path.Combine(AutoStart.InstallDir, "updates", version);
-            var exe = await Task.Run(() => ReleaseFeed.DownloadAsync(latest, dir, UpdateRetryDelays));
+            var exe = await Task.Run(() => ReleaseFeed.DownloadAsync(latest, dir, UpdateRetryDelays, line => AppLog.Write($"update download {version}: {line}")));
+            AppLog.Write($"update {version} downloaded");
             _ready = (latest, exe);
             RebuildMenu();
             if (manual) await InstallUpdateAsync(manual: true);
@@ -347,6 +350,7 @@ sealed class TrayContext : ApplicationContext
         catch (Exception e) when (e is HttpRequestException or IOException or TimeoutException or InvalidDataException or JsonException
                                       or FormatException or ArgumentException or KeyNotFoundException or InvalidOperationException or UnauthorizedAccessException)
         {
+            AppLog.Error("update check", e);
             if (manual) Notify("DuoSync", "Не получилось проверить обновления: " + e.Message, ToolTipIcon.Warning);
         }
     }
@@ -384,6 +388,7 @@ sealed class TrayContext : ApplicationContext
         }
         catch (Exception e) when (!handedOver && e is IOException or UnauthorizedAccessException or InvalidDataException)
         {
+            AppLog.Error("update install", e);
             _installing = false;
             _ready = null;
             _timer.Start();
@@ -407,17 +412,27 @@ sealed class TrayContext : ApplicationContext
         try
         {
             _github ??= await GitHubClient.ConnectAsync(interactive);
-            if (_github == null) return;
+            if (_github == null)
+            {
+                AppLog.Write("discovery: no stored GitHub login");
+                return;
+            }
             IReadOnlyList<RemoteProject> all;
             try { all = await _github.ProjectsAsync(); }
-            catch (GitHubException e) when (e.Kind == GitHubError.Unauthorized) { _github = null; return; }
+            catch (GitHubException e) when (e.Kind == GitHubError.Unauthorized)
+            {
+                AppLog.Write("discovery: GitHub refused the stored login");
+                _github = null;
+                return;
+            }
             var local = await LocalRepositoriesAsync();
             Available = all.Where(p => !local.Contains(p.FullName)).ToList();
+            AppLog.Write($"discovery: {all.Count} projects, {Available.Count} not here" + (Available.Count > 0 ? ": " + string.Join(", ", Available.Select(p => p.FullName)) : ""));
             AvailableChanged?.Invoke();
             RebuildMenu();
             AnnounceNew();
         }
-        catch (GitHubException) { }
+        catch (GitHubException e) { AppLog.Error("discovery", e); }
         finally { _discovering = false; }
     }
 

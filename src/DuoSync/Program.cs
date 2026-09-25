@@ -8,8 +8,14 @@ static class Program
     static int Main(string[] args)
     {
         if (args.Length > 0 && args[0] == "--cli") return Cli.Run(args);
+        AppLog.Start(args);
         UpdateGuard.OnStartup();
         ApplicationConfiguration.Initialize();
+        Application.ThreadException += (_, e) =>
+        {
+            AppLog.Error("ошибка в окне", e.Exception);
+            MessageBox.Show("Ошибка: " + e.Exception.Message, "DuoSync", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        };
         if (Installer.InstallAndRelaunch(args)) return 0;
 
         // After an update the old copy is still handing over: wait for its mutex instead of showing it.

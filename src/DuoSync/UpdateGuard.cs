@@ -72,6 +72,7 @@ static class UpdateGuard
         if (s.Status != "starting" || s.To != CurrentText) return;
         s.Starts++;
         Save(s);
+        AppLog.Write($"update: start {s.Starts} of fresh {s.To}");
         if (s.Starts >= 3) RollBack(s, "не запускается", exit: true);
         AppDomain.CurrentDomain.UnhandledException += (_, _) =>
         {
@@ -90,6 +91,7 @@ static class UpdateGuard
         {
             s.Status = "ok";
             Save(s);
+            AppLog.Write($"update: {s.From} -> {s.To} ok");
         }
         if (s.Status != "ok" || s.Announced) return null;
         s.Announced = true;
@@ -139,6 +141,7 @@ static class UpdateGuard
         s.Notes = release.Notes.ToList();
         Save(s);
 
+        AppLog.Write($"update: {s.From} -> {s.To} swapped, handing over");
         handOver();
         // From here on nothing may throw: the mutex is gone and the caller exits whatever happens.
         string? failure;
@@ -150,6 +153,7 @@ static class UpdateGuard
         }
         catch (System.ComponentModel.Win32Exception) { failure = "Windows не дала её запустить"; }
         catch (Exception e) { failure = e.Message; }
+        AppLog.Write($"update: new copy pid {started?.Id} -> {failure ?? "ok"}");
         if (failure == null) return;
 
         try
@@ -180,6 +184,7 @@ static class UpdateGuard
     {
         var installed = Installer.InstalledExe;
         s.Reason = reason;
+        AppLog.Write($"update: rolling back {s.To} -> {s.From}: {reason}");
         if (!File.Exists(OldExe))
         {
             s.Status = "failed";

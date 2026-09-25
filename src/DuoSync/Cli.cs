@@ -14,9 +14,10 @@ static class Cli
     {
         Console.OutputEncoding = System.Text.Encoding.UTF8;
         if (args.Length == 2 && args[1] == "projects") return Projects();
+        if (args.Length == 2 && args[1] == "update") return Update();
         if (args.Length < 3)
         {
-            Console.Error.WriteLine("usage: --cli prepare|receive|send|undo|status|unity <folder> [message] | --cli projects");
+            Console.Error.WriteLine("usage: --cli prepare|receive|send|undo|status|unity <folder> [message] | --cli projects | --cli update");
             return 2;
         }
         var settings = AppSettings.Load();
@@ -68,6 +69,16 @@ static class Cli
         if (!string.IsNullOrWhiteSpace(result.Detail)) Console.WriteLine("detail: " + result.Detail.Trim());
         if (result.ConflictedPaths.Count > 0) Console.WriteLine("conflicts: " + string.Join(", ", result.ConflictedPaths));
         return result.Succeeded ? 0 : 1;
+    }
+
+    /// <summary>Debug: what the updater sees (does not download or install).</summary>
+    static int Update()
+    {
+        var latest = DuoSync.Core.Updates.ReleaseFeed.LatestAsync().GetAwaiter().GetResult();
+        Console.WriteLine($"mine: {UpdateGuard.Current.ToString(3)} installed-copy={UpdateGuard.Enabled}");
+        Console.WriteLine(latest == null ? "latest: none" : $"latest: {latest.Version.ToString(3)} size={latest.Size} bad={UpdateGuard.IsBad(latest.Version)}");
+        Console.WriteLine("log: " + AppLog.Dir);
+        return 0;
     }
 
     /// <summary>Debug: what project discovery sees with the stored GitHub login (never prints the token).</summary>

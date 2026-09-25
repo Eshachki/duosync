@@ -56,6 +56,7 @@ sealed class ProjectController
             Busy = false;
             Progress = null;
         }
+        AppLog.Write($"{Entry.Name}: {LastResult.Status}: {LastResult.Message}" + (LastResult.Detail is { Length: > 0 } d ? " | " + d : ""));
         await RefreshAsync();
         return LastResult;
     }
