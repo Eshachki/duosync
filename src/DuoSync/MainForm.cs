@@ -25,7 +25,7 @@ sealed class MainForm : Form
     public MainForm(TrayContext app)
     {
         _app = app;
-        Text = "DuoSync";
+        Text = $"DuoSync {UpdateGuard.Current.ToString(3)}";
         Font = new Font("Segoe UI", 10f);
         ClientSize = new Size(800, 560);
         MinimumSize = new Size(640, 420);
