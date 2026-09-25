@@ -18,6 +18,8 @@ public sealed class AppSettings
     public string FriendName { get; set; } = "";
     public int PollSeconds { get; set; } = 60;
     public bool AutoStart { get; set; } = true;
+    /// <summary>Where «Создать репозиторий» puts new repositories (organization or login).</summary>
+    public string GitHubOwner { get; set; } = "";
     public List<ProjectEntry> Projects { get; set; } = new();
 
     static readonly JsonSerializerOptions Json = new() { WriteIndented = true };

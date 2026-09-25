@@ -92,7 +92,17 @@ public sealed class SyncEngine
         return r;
     }
 
-    Task<GitResult> FetchWithRetryAsync(CancellationToken ct) => WithRetryAsync(() => _repo.FetchAsync(ct: ct), "получение", ct);
+    async Task<GitResult> FetchWithRetryAsync(CancellationToken ct)
+    {
+        var r = await WithRetryAsync(() => _repo.FetchAsync(ct: ct), "получение", ct);
+        // A brand-new, empty GitHub repository has no main yet: that is "nothing there", not an error.
+        if (!r.Ok && r.StdErr.Contains("couldn't find remote ref", StringComparison.OrdinalIgnoreCase))
+        {
+            await _repo.DeleteRefAsync(_repo.RemoteBranchRef);
+            return r with { ExitCode = 0 };
+        }
+        return r;
+    }
 
     // ------------------------------------------------------------------ Получить
 

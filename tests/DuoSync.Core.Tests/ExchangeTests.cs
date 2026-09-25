@@ -234,6 +234,23 @@ public class ExchangeTests
     }
 
     [Fact]
+    public async Task First_send_into_an_empty_github_repository()
+    {
+        await using var sb = await CreateAsync();
+        var empty = Path.Combine(sb.Root, "empty.git");
+        await sb.Owner.Git.RunCheckedAsync("init", "--bare", "-b", "main", empty);
+        await sb.Owner.Git.RunCheckedAsync("remote", "set-url", "origin", empty);
+        await sb.Owner.Repo.DeleteRefAsync(sb.Owner.Repo.RemoteBranchRef);
+        await sb.Owner.Repo.DeleteRefAsync(SyncEngine.LastRemoteRef);
+
+        Assert.Equal(OpStatus.UpToDate, (await sb.Owner.Engine.ReceiveAsync()).Status);
+        var sent = await sb.Owner.Engine.SendAsync("Первая заливка");
+
+        Assert.Equal(OpStatus.Done, sent.Status);
+        Assert.Equal(await sb.Owner.HeadAsync(), await new DuoSync.Core.Git.GitRunner(empty, "t", "t@x").OutAsync("rev-parse", "main"));
+    }
+
+    [Fact]
     public async Task Nothing_to_send_when_nothing_changed()
     {
         await using var sb = await CreateAsync();

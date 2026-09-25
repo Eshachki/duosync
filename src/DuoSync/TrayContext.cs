@@ -178,17 +178,21 @@ sealed class TrayContext : ApplicationContext
 
     public void AddProjectInteractive(IWin32Window owner)
     {
+        var create = new TaskDialogButton("Новый проект");
         var connect = new TaskDialogButton("Подключить папку");
         var clone = new TaskDialogButton("Скачать по ссылке");
         var page = new TaskDialogPage
         {
             Caption = "DuoSync",
             Heading = "Добавить проект",
-            Text = "Подключить — если проект уже лежит у тебя в папке и связан с GitHub.\nСкачать — если проекта у тебя ещё нет, а на GitHub он есть.",
-            Buttons = { connect, clone, TaskDialogButton.Cancel },
+            Text = "Новый проект — папка Unity-проекта, которого ещё нет на GitHub: программа создаст репозиторий, подготовит и отправит проект.\n" +
+                   "Подключить — проект уже лежит у тебя и связан с GitHub.\n" +
+                   "Скачать — проекта у тебя нет, а на GitHub он есть (так подключается друг).",
+            Buttons = { create, connect, clone, TaskDialogButton.Cancel },
         };
         var pressed = TaskDialog.ShowDialog(owner, page);
-        if (pressed == connect) ConnectFolder(owner);
+        if (pressed == create) _ = CreateProjectAsync(owner);
+        else if (pressed == connect) ConnectFolder(owner);
         else if (pressed == clone) _ = CloneAsync(owner);
     }
 
@@ -199,17 +203,75 @@ sealed class TrayContext : ApplicationContext
         var dir = dlg.SelectedPath;
         if (!Directory.Exists(Path.Combine(dir, ".git")))
         {
-            MessageBox.Show(owner, "В этой папке нет git-репозитория. Выбери папку проекта, скачанного с GitHub, или используй «Скачать по ссылке».",
+            MessageBox.Show(owner, "В этой папке нет git-репозитория. Если проекта ещё нет на GitHub — выбери «Новый проект», если есть — «Скачать по ссылке».",
                 "DuoSync", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
         AddProject(dir);
     }
 
+    /// <summary>Unity folder without git → private GitHub repository, project setup and the first send, in one go.</summary>
+    async Task CreateProjectAsync(IWin32Window owner)
+    {
+        using var dlg = new FolderBrowserDialog { Description = "Папка Unity-проекта (где лежат Assets и Packages)", UseDescriptionForTitle = true };
+        if (dlg.ShowDialog(owner) != DialogResult.OK) return;
+        var dir = dlg.SelectedPath;
+        if (!DuoSync.Core.Setup.BridgeInstaller.IsUnityProject(dir))
+        {
+            MessageBox.Show(owner, "Это не папка Unity-проекта: в ней нет Assets и Packages.", "DuoSync", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+        if (Directory.Exists(Path.Combine(dir, ".git")))
+        {
+            AddProject(dir);
+            return;
+        }
+        if (DuoSync.Core.Unity.UnityDetector.IsProjectOpen(dir))
+        {
+            MessageBox.Show(owner, "Этот проект сейчас открыт в Unity. Закрой Unity на время создания репозитория и повтори.",
+                "DuoSync", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        var ownerName = Prompt.Ask(owner, "Новый проект", "Где создать репозиторий на GitHub (организация или твой логин):",
+            string.IsNullOrWhiteSpace(Settings.GitHubOwner) ? "Eshachki" : Settings.GitHubOwner);
+        if (ownerName == null) return;
+        var repoName = Prompt.Ask(owner, "Новый проект", "Имя репозитория:",
+            System.Text.RegularExpressions.Regex.Replace(Path.GetFileName(dir.TrimEnd('\\', '/')), @"[^A-Za-z0-9._-]+", "-"));
+        if (repoName == null) return;
+        Settings.GitHubOwner = ownerName;
+        Settings.Save();
+
+        var git = new GitRunner(dir, Settings.MeName, Settings.MeEmail);
+        await git.RunCheckedAsync("init", "-q", "-b", "main");
+        var gh = await RunGhAsync(dir, "repo", "create", $"{ownerName}/{repoName}", "--private", "--source", dir, "--remote", "origin");
+        if (!gh.Ok)
+        {
+            var url = Prompt.Ask(owner, "Новый проект",
+                "Не получилось создать репозиторий автоматически (" + gh.Error + "). Создай пустой приватный репозиторий на github.com и вставь ссылку:");
+            if (url == null) return;
+            await git.RunCheckedAsync("remote", "add", "origin", NormalizeUrl(url));
+        }
+
+        var controller = AddProject(dir);
+        ShowWindow();
+        _tray.ShowBalloonTip(5_000, "DuoSync", $"Готовлю «{repoName}» и отправляю на GitHub. Большой проект может отправляться долго.", ToolTipIcon.Info);
+        var result = await controller.RunAsync(async engine =>
+        {
+            var prepared = await new DuoSync.Core.Setup.ProjectSetup(engine.Repo, Settings.MeName, Settings.FriendName).ApplyAsync();
+            if (!prepared.Succeeded) return prepared;
+            return await engine.SendAsync("Новый проект");
+        });
+        _tray.ShowBalloonTip(8_000, "DuoSync", result.Succeeded
+            ? $"«{repoName}» на GitHub. Другу: «Добавить проект → Скачать по ссылке» → {ownerName}/{repoName}"
+            : result.Message, result.Succeeded ? ToolTipIcon.Info : ToolTipIcon.Warning);
+    }
+
     async Task CloneAsync(IWin32Window owner)
     {
-        var url = Prompt.Ask(owner, "Скачать проект", "Ссылка на репозиторий GitHub (https://github.com/…):");
-        if (url == null) return;
+        var input = Prompt.Ask(owner, "Скачать проект", "Ссылка на репозиторий GitHub или «организация/имя»:");
+        if (input == null) return;
+        var url = NormalizeUrl(input);
         using var dlg = new FolderBrowserDialog { Description = "Куда положить проект (будет создана папка с его именем)", UseDescriptionForTitle = true };
         if (dlg.ShowDialog(owner) != DialogResult.OK) return;
         var name = Path.GetFileNameWithoutExtension(url.TrimEnd('/'));
@@ -221,24 +283,57 @@ sealed class TrayContext : ApplicationContext
         }
         var git = new GitRunner(dlg.SelectedPath, Settings.MeName, Settings.MeEmail);
         _tray.ShowBalloonTip(5_000, "DuoSync", $"Скачиваю «{name}»… Большой проект может качаться долго.", ToolTipIcon.Info);
-        var r = await git.RunAsync(new[] { "clone", url, target }, new GitRunOptions { Timeout = TimeSpan.FromMinutes(60) });
+        GitResult r = await git.RunAsync(new[] { "clone", url, target }, new GitRunOptions { Timeout = TimeSpan.FromMinutes(90) });
+        for (int attempt = 0; !r.Ok && attempt < 2 && GitErrors.Classify(r) is GitErrorKind.Network or GitErrorKind.Timeout; attempt++)
+        {
+            await Task.Delay(TimeSpan.FromSeconds(15));
+            if (Directory.Exists(target)) { try { Directory.Delete(target, true); } catch (IOException) { } }
+            r = await git.RunAsync(new[] { "clone", url, target }, new GitRunOptions { Timeout = TimeSpan.FromMinutes(90) });
+        }
         if (!r.Ok)
         {
             MessageBox.Show(owner, "Не получилось скачать: " + GitErrors.Explain(r), "DuoSync", MessageBoxButtons.OK, MessageBoxIcon.Error);
             return;
         }
         AddProject(target);
+        _tray.ShowBalloonTip(8_000, "DuoSync", $"«{name}» скачан. Открой его в Unity (той же версии, что у друга).", ToolTipIcon.Info);
     }
 
-    void AddProject(string dir)
+    static string NormalizeUrl(string input)
     {
-        if (Settings.Projects.Any(p => string.Equals(p.Path, dir, StringComparison.OrdinalIgnoreCase))) { ShowWindow(); return; }
-        var entry = new ProjectEntry { Path = dir, Name = Path.GetFileName(dir.TrimEnd('\\', '/')) };
+        var s = input.Trim();
+        if (System.Text.RegularExpressions.Regex.IsMatch(s, @"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")) return $"https://github.com/{s}.git";
+        return s;
+    }
+
+    static async Task<(bool Ok, string Error)> RunGhAsync(string cwd, params string[] args)
+    {
+        try
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo("gh") { WorkingDirectory = cwd, RedirectStandardError = true, RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true };
+            foreach (var a in args) psi.ArgumentList.Add(a);
+            psi.Environment["GH_PROMPT_DISABLED"] = "1";
+            using var p = System.Diagnostics.Process.Start(psi)!;
+            var err = p.StandardError.ReadToEndAsync();
+            await p.StandardOutput.ReadToEndAsync();
+            await p.WaitForExitAsync();
+            return (p.ExitCode == 0, (await err).Trim());
+        }
+        catch (System.ComponentModel.Win32Exception) { return (false, "не найден GitHub CLI (gh)"); }
+    }
+
+    ProjectController AddProject(string dir)
+    {
+        var existing = Controllers.FirstOrDefault(c => string.Equals(c.Entry.Path, dir, StringComparison.OrdinalIgnoreCase));
+        if (existing != null) { ShowWindow(); return existing; }
+        var entry = new ProjectEntry { Path = dir, Name = Path.GetFileName(dir.TrimEnd(Path.DirectorySeparatorChar, '/')) };
         Settings.Projects.Add(entry);
         Settings.Save();
-        Controllers.Add(new ProjectController(entry, Settings));
+        var controller = new ProjectController(entry, Settings);
+        Controllers.Add(controller);
         _form?.ReloadProjects();
         _ = PollAsync();
+        return controller;
     }
 
     protected override void ExitThreadCore()
