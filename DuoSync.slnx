@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/DuoSync.Core/DuoSync.Core.csproj" />
+    <Project Path="src/DuoSync/DuoSync.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/DuoSync.Core.Tests/DuoSync.Core.Tests.csproj" />
+  </Folder>
+</Solution>

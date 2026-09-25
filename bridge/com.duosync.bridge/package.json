@@ -1,0 +1,7 @@
+{
+  "name": "com.duosync.bridge",
+  "version": "0.1.0",
+  "displayName": "DuoSync Bridge",
+  "description": "Editor-only bridge between the DuoSync app and the Unity Editor.",
+  "unity": "6000.0"
+}

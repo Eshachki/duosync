@@ -1,0 +1,8 @@
+{
+  "name": "DuoSync.Bridge.Editor",
+  "rootNamespace": "DuoSync.Bridge",
+  "includePlatforms": [
+    "Editor"
+  ],
+  "autoReferenced": false
+}

@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The Unity bridge package ships inside the app; project setup writes it into Packages/com.duosync.bridge. -->
+    <!-- WithCulture=false: otherwise MSBuild takes "X.cs.meta" for a Czech ("cs") satellite resource and drops it. -->
+    <EmbeddedResource Include="..\..\bridge\com.duosync.bridge\**\*" LogicalName="bridge/%(RecursiveDir)%(Filename)%(Extension)" WithCulture="false" />
+  </ItemGroup>
+
+</Project>
