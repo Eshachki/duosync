@@ -46,7 +46,7 @@ public class SetupTests : IDisposable
     public async Task Library_and_builds_already_in_git_leave_the_index_but_stay_on_disk()
     {
         var repo = await UnpreparedCloneAsync();
-        foreach (var rel in new[] { "Library/ArtifactDB", "Library/sub/cache.bin", "Temp/x.tmp", "Builds/game.exe", "Assets/Plugins/Native.dll" })
+        foreach (var rel in new[] { "Library/ArtifactDB", "Library/sub/cache.bin", "Temp/x.tmp", "Builds/game.exe", "Game.sln", "Assets/Art/.DS_Store", "Assets/Plugins/Native.dll", "Assets/Plugins/Native.pdb" })
         {
             var full = Path.Combine(repo.Root, rel.Replace('/', Path.DirectorySeparatorChar));
             Directory.CreateDirectory(Path.GetDirectoryName(full)!);
@@ -57,16 +57,19 @@ public class SetupTests : IDisposable
 
         var setup = new ProjectSetup(repo, "Аня", "Боря");
         var plan = await setup.PlanAsync();
-        Assert.Contains(plan.Changes, c => c.Path.Contains("Library/") && c.Path.Contains("Temp/") && c.Description.Contains("убрать из git 4"));
+        Assert.Contains(plan.Changes, c => c.Path.Contains("Library/") && c.Path.Contains("Temp/") && c.Description.Contains("убрать из git 6"));
 
         var result = await setup.ApplyAsync();
         Assert.Equal(OpStatus.Done, result.Status);
-        Assert.Contains("из git убрано 4", result.Message);
+        Assert.Contains("из git убрано 6", result.Message);
         var tracked = await repo.Git.OutAsync("ls-files");
         Assert.DoesNotContain("Library/", tracked);
         Assert.DoesNotContain("Temp/", tracked);
         Assert.DoesNotContain("Builds/", tracked);
+        Assert.DoesNotContain("Game.sln", tracked);
+        Assert.DoesNotContain(".DS_Store", tracked);
         Assert.Contains("Assets/Plugins/Native.dll", tracked); // plugins inside Assets are legitimate
+        Assert.Contains("Assets/Plugins/Native.pdb", tracked);
         Assert.True(File.Exists(Path.Combine(repo.Root, "Library", "ArtifactDB")));
         Assert.True(File.Exists(Path.Combine(repo.Root, "Builds", "game.exe")));
         Assert.False(await repo.HasTrackedChangesAsync());
@@ -102,14 +105,29 @@ public class SetupTests : IDisposable
         await new ProjectSetup(repo, "Аня", "Боря").ApplyAsync();
 
         var text = File.ReadAllText(Path.Combine(repo.Root, ".gitignore")).Replace("\r\n", "\n");
-        Assert.StartsWith("# Unity", text);
+        Assert.StartsWith("# Свои правила", text);
         Assert.Contains(Templates.BlockStart, text);
         foreach (var ignored in new[] { "Assets/IGNORE_FOLDER/Pack/Rock.fbx", "Assets/IGNORE_FOLDER.meta", "TRASH/old.png", "web/index.html",
-                                        "Game.apk", "Library/x.asset", "Assets/_Local/Test.cs" })
+                                        "Game.apk", "Library/x.asset", "Assets/_Local/Test.cs",
+                                        "Game.sln", "Assets/Art/.DS_Store", "Assets/Art/Thumbs.db", "Assets/Models/Door.blend1", ".vscode/settings.json",
+                                        "Game_BurstDebugInformation_DoNotShip/lib.pdb", "Temp/x", "UserSettings/Layouts.dwlt" })
             Assert.True(await IgnoredAsync(repo, ignored), ignored);
         foreach (var kept in new[] { "Assets/Plugins/DOTween.dll", "Assets/Plugins/DOTween.dll.mdb", "Assets/Plugins/DOTween.dll.meta",
-                                     "Assets/Models/Door.obj", "Assets/Scripts/A.cs.meta" })
+                                     "Assets/Plugins/DOTween.pdb", "Assets/Models/Door.obj", "Assets/Scripts/A.cs.meta", ".vsconfig" })
             Assert.False(await IgnoredAsync(repo, kept), kept);
+    }
+
+    [Fact]
+    public async Task Project_prepared_by_an_older_version_is_offered_the_new_rules()
+    {
+        var old = Templates.BlockStart + "\n/[Ll]ibrary/\n" + Templates.BlockEnd + "\n";
+        var repo = await UnpreparedCloneAsync(gitignore: "/MyStuff/\n\n" + old);
+        Assert.True(ProjectSetup.IgnoreRulesOutdated(repo.Root));
+
+        await new ProjectSetup(repo, "Аня", "Боря").ApplyAsync();
+
+        Assert.False(ProjectSetup.IgnoreRulesOutdated(repo.Root));
+        Assert.StartsWith("/MyStuff/\n", File.ReadAllText(Path.Combine(repo.Root, ".gitignore")).Replace("\r\n", "\n"));
     }
 
     [Fact]
@@ -124,6 +142,9 @@ public class SetupTests : IDisposable
         Assert.DoesNotContain("# Unity (по шаблону", text);
         Assert.True(await IgnoredAsync(repo, "Assets/IGNORE_FOLDER/Pack/Rock.fbx"));
         Assert.True(await IgnoredAsync(repo, "MyStuff/notes.txt"));
+        // The whole Unity list comes with the block, whatever the project's own file had.
+        foreach (var ignored in new[] { "Temp/x", "Game.sln", "Assets/Plugins/Editor/JetBrains/x.dll", "crash.dmp" })
+            Assert.True(await IgnoredAsync(repo, ignored), ignored);
     }
 
     static async Task<bool> IgnoredAsync(Repo repo, string path)

@@ -21,9 +21,6 @@ public sealed class ProjectSetup
     public const string BridgeVersion = "0.1.0";
     const string LocalStampName = "local-setup.v1";
 
-    /// <summary>Unity's generated folders in the project root: in git by mistake they travel with every exchange.</summary>
-    static readonly string[] JunkDirs = { "Library", "Temp", "Obj", "Build", "Builds", "Logs", "UserSettings", "MemoryCaptures", "Recordings", "BuildReports", "ProfilerCaptures" };
-
     static readonly string[] DisabledPatterns = { "merge=unityyamlmerge", "merge=lfs" };
     /// <summary>
     /// Any clean/smudge filter except LFS: it runs only where it is installed, so the two computers would see
@@ -50,6 +47,22 @@ public sealed class ProjectSetup
         return !BridgeInstaller.IsUnityProject(root) || BridgeInstaller.InstalledVersion(root) != null;
     }
 
+    /// <summary>
+    /// The project was prepared by an older version: its .gitignore block lacks rules added since. Not a stop,
+    /// only the button «Обновить подготовку» (one commit, like the first preparation).
+    /// </summary>
+    public static bool IgnoreRulesOutdated(string root)
+    {
+        try
+        {
+            var path = Path.Combine(root, ".gitignore");
+            if (!File.Exists(path)) return false;
+            var text = File.ReadAllText(path).Replace("\r\n", "\n");
+            return text.Contains(Templates.BlockStart, StringComparison.Ordinal) && UpsertBlock(text, Templates.GitIgnoreBlock()) != text;
+        }
+        catch (IOException) { return false; }
+    }
+
     /// <summary>What <see cref="ApplyAsync"/> would change, for the confirmation screen.</summary>
     public async Task<SetupPlan> PlanAsync()
     {
@@ -61,10 +74,15 @@ public sealed class ProjectSetup
         if (NeedsBridge())
             changes.Add(new SetupChange(BridgeInstaller.PackageDir,
                 "мост DuoSync для Unity: сохраняет сцены перед обменом и открывает изменённые заново"));
-        var junk = await TrackedJunkAsync();
+        var ignore = files.First(f => f.Path == ".gitignore").Content;
+        var junk = await TrackedIgnoredAsync(ignore);
         if (junk.Count > 0)
-            changes.Add(new SetupChange(string.Join(", ", junk.Select(j => j.Dir + "/")),
-                $"убрать из git {Ru.Files(junk.Sum(j => j.Files))}, попавших туда по ошибке. С диска ничего не удаляется"));
+        {
+            var groups = junk.GroupBy(p => p.Contains('/') ? p[..(p.IndexOf('/') + 1)] : p)
+                .OrderByDescending(g => g.Count()).Select(g => g.Count() > 1 ? $"{g.Key} ({g.Count()})" : g.Key).ToList();
+            changes.Add(new SetupChange(string.Join(", ", groups.Take(6)) + (groups.Count > 6 ? $" и ещё {groups.Count - 6}" : ""),
+                $"убрать из git {Ru.Files(junk.Count)}, которые туда не должны попадать. С диска ничего не удаляется"));
+        }
         return new SetupPlan(changes, warnings);
     }
 
@@ -165,19 +183,17 @@ public sealed class ProjectSetup
         return (files, warnings);
     }
 
-    /// <summary>Unity's generated folders that git tracks, with the number of files in each.</summary>
-    async Task<List<(string Dir, int Files)>> TrackedJunkAsync()
+    /// <summary>Tracked files the given root .gitignore (not written yet) would exclude.</summary>
+    async Task<List<string>> TrackedIgnoredAsync(string rootIgnore)
     {
-        var r = await _repo.Git.RunAsync("ls-files", "-z");
-        if (!r.Ok) return new List<(string, int)>();
-        return GitParse.SplitZ(r.StdOutBytes)
-            .Select(p => p.Split('/')[0])
-            .Select(top => JunkDirs.FirstOrDefault(d => string.Equals(d, top, StringComparison.OrdinalIgnoreCase)))
-            .Where(d => d != null)
-            .GroupBy(d => d!)
-            .Select(g => (g.Key, g.Count()))
-            .OrderBy(x => Array.IndexOf(JunkDirs, x.Key))
-            .ToList();
+        var tmp = Path.Combine(await _repo.DuoDirAsync(), "gitignore.plan");
+        await File.WriteAllTextAsync(tmp, rootIgnore, new UTF8Encoding(false));
+        try
+        {
+            var r = await _repo.Git.RunAsync("ls-files", "-z", "--cached", "--ignored", "--exclude-from=" + tmp);
+            return r.Ok ? GitParse.SplitZ(r.StdOutBytes) : new List<string>();
+        }
+        finally { File.Delete(tmp); }
     }
 
     /// <summary>

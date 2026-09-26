@@ -242,7 +242,9 @@ sealed class MainForm : Form
         var c = Current;
         bool enabled = c != null && !c.Busy;
         bool notPrepared = c?.Status?.State == SyncState.NotPrepared;
-        _prepare.Visible = notPrepared;
+        var outdated = !notPrepared && c != null && DuoSync.Core.Setup.ProjectSetup.IgnoreRulesOutdated(c.Entry.Path);
+        _prepare.Visible = notPrepared || outdated;
+        _prepare.Text = outdated ? "Обновить подготовку" : "Подготовить проект";
         _receive.Enabled = _send.Enabled = _undo.Enabled = enabled && !notPrepared;
         _check.Enabled = _prepare.Enabled = enabled;
         _todo.Enabled = _report.Enabled = c != null;

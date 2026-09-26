@@ -51,73 +51,52 @@ public static class Templates
         return string.Join("\n", lines) + "\n";
     }
 
+    /// <summary>
+    /// Everything a Unity project must not share, in one managed block that applies whatever the project's own
+    /// .gitignore says (the github/gitignore Unity template, IDE, builds, OS junk, AI tools, the people's conventions).
+    /// Order matters: the Assets exceptions come after the global debug-file rules and before the Assets dumps.
+    /// </summary>
     public static string GitIgnoreBlock() => string.Join("\n", new[]
     {
         BlockStart,
-        "/[Ll]ibrary/", "/[Tt]emp/", "/[Oo]bj/", "/[Bb]uild/", "/[Bb]uilds/", "/[Ll]ogs/", "/[Uu]ser[Ss]ettings/",
-        "/[Mm]emoryCaptures/", "/[Rr]ecordings/", "/[Bb]uild[Rr]eports/", "/[Pp]rofiler[Cc]aptures/",
-        // The people's own conventions: a dump for whole purchased packs (with its .meta, or Unity recreates it
-        // and it travels alone), working dumps and web exports.
+        "# Папки, которые Unity создаёт сам",
+        "/[Ll]ibrary/", "/[Tt]emp/", "/[Oo]bj/", "/[Ll]ogs/", "/[Uu]ser[Ss]ettings/", "/[Mm]emoryCaptures/", "/[Rr]ecordings/",
+        "/[Pp]rofiler[Cc]aptures/", "/[Bb]uild[Rr]eports/", "/[Cc]ode[Cc]overage/", ".utmp/",
+        "# Сборки",
+        "/[Bb]uild/", "/[Bb]uilds/", "*.apk", "*.aab", "*.app", "*.ipa", "*.apks", "*.symbols.zip",
+        "*_BurstDebugInformation_DoNotShip/", "*_BackUpThisFolder_ButDontShipItWithYourGame/",
+        "crashlytics-build.properties", "/ServerData/",
+        "/[Aa]ssets/[Ss]treaming[Aa]ssets/aa/", "/[Aa]ssets/[Ss]treaming[Aa]ssets/aa.meta",
+        "/[Aa]ssets/AddressableAssetsData/link.xml*", "/[Aa]ssets/Addressables_Temp*", "/[Aa]ssets/AddressableAssetsData/*/*.bin*",
+        "/[Aa]ssets/Unity.VisualScripting.Generated/VisualScripting.Flow/UnitOptions.db*",
+        "/[Aa]ssets/Unity.VisualScripting.Generated/VisualScripting.Core/Property Providers*",
+        "/[Aa]ssets/[Ii]nit[Tt]est[Ss]cene*.unity*",
+        "# Редакторы кода: файлы проекта у каждого свои",
+        "*.csproj", "*.unityproj", "*.sln", "*.slnx", "*.suo", "*.user", "*.userprefs", "*.pidb", "*.booproj", "*.svd",
+        "*.opendb", "*.VC.db", "*.DotSettings.user", ".vs/", ".vscode/", ".idea/", ".gradle/", ".consulo/", "ExportedObj/",
+        "/[Aa]ssets/Plugins/Editor/JetBrains*",
+        "# Отладочные файлы; у плагинов внутри Assets они законные",
+        "*.pdb", "*.mdb", "*.pidb.meta", "*.pdb.meta", "*.mdb.meta",
+        "!/[Aa]ssets/**/*.pdb", "!/[Aa]ssets/**/*.pdb.meta", "!/[Aa]ssets/**/*.mdb", "!/[Aa]ssets/**/*.mdb.meta",
+        "# Мусор системы, git и программ",
+        "*.log", "*.tmp", "*.blend1", "*.blend1.meta", "*.stackdump", "*.dmp", "sysinfo.txt", "mono_crash.*",
+        ".DS_Store", "._*", "Thumbs.db", "ehthumbs.db", "[Dd]esktop.ini", "$RECYCLE.BIN/",
+        "*.orig", "*.BACKUP.*", "*.BASE.*", "*.LOCAL.*", "*.REMOTE.*", ".env",
+        "/.plastic/", "/ignore.conf", "/.collabignore",
+        "# Покупные пакеты и свалки людей: IGNORE_FOLDER вместе с .meta, иначе Unity создаст его заново и он уедет один",
+        "*.unitypackage", "*.unitypackage.meta",
         "/[Aa]ssets/IGNORE_FOLDER/", "/[Aa]ssets/IGNORE_FOLDER.meta", "/TRASH/", "/web/",
-        "*.apk", "*.aab", "*.app", "*.unitypackage", "*.unitypackage.meta",
-        "*.csproj", "*.sln", "*.slnx", ".vs/", ".idea/", ".env",
         "/Assets/_Recovery/", "/Assets/_Recovery.meta", "/Assets/_Local/", "/Assets/_Local.meta",
+        "# Локальные настройки нейросетей и MCP",
         "/.duosync/", "/.mcp.json", "/opencode.json", "/.opencode/", "/.cline/", "/.claude/settings.local.json",
         "/.claude/skills/*", "!/.claude/skills/project-*/", "/.agents/skills/*",
-        "*.orig", "*.BACKUP.*", "*.BASE.*", "*.LOCAL.*", "*.REMOTE.*", "sysinfo.txt", "mono_crash.*",
         BlockEnd,
     }) + "\n";
 
     /// <summary>
-    /// Whole .gitignore for a project that has none: the github/gitignore Unity template with the people's additions.
-    /// A project that already has its own file keeps it; only the DuoSync block is added to it.
+    /// Start of .gitignore for a project that has none; everything that matters is in <see cref="GitIgnoreBlock"/>.
     /// </summary>
-    public const string BaseGitIgnore = @"# Unity (по шаблону github/gitignore)
-.utmp/
-*.log
-*.blend1
-*.blend1.meta
-/[Aa]ssets/AssetStoreTools*
-/[Aa]ssets/Plugins/Editor/JetBrains*
-*.DotSettings.user
-.gradle/
-ExportedObj/
-.consulo/
-*.unityproj
-*.suo
-*.tmp
-*.user
-*.userprefs
-*.pidb
-*.booproj
-*.svd
-*.pdb
-*.mdb
-*.opendb
-*.VC.db
-*.pidb.meta
-*.pdb.meta
-*.mdb.meta
-
-# Правила выше писались про мусор в корне. Внутри Assets .meta, .obj и файлы плагинов (.dll, .pdb, .mdb)
-# законные: ассет без своего .meta получит у друга новый GUID, и ссылки на него тихо порвутся.
-!/[Aa]ssets/**/*.meta
-!/[Aa]ssets/**/*.obj
-!/[Aa]ssets/**/*.dll
-!/[Aa]ssets/**/*.pdb
-!/[Aa]ssets/**/*.mdb
-
-crashlytics-build.properties
-/[Aa]ssets/[Ii]nit[Tt]est[Ss]cene*.unity*
-/ServerData
-/[Aa]ssets/StreamingAssets/aa*
-/[Aa]ssets/AddressableAssetsData/link.xml*
-/[Aa]ssets/Addressables_Temp*
-/[Aa]ssets/AddressableAssetsData/*/*.bin*
-/[Aa]ssets/Unity.VisualScripting.Generated/VisualScripting.Flow/UnitOptions.db
-/[Aa]ssets/Unity.VisualScripting.Generated/VisualScripting.Flow/UnitOptions.db.meta
-/[Aa]ssets/Unity.VisualScripting.Generated/VisualScripting.Core/Property Providers
-/[Aa]ssets/Unity.VisualScripting.Generated/VisualScripting.Core/Property Providers.meta
+    public const string BaseGitIgnore = @"# Свои правила пишите здесь, над блоком DuoSync.
 
 # Покупные паки, которые импортируются целиком ради пары вещей, в истории не держим:
 # /[Aa]ssets/ИмяПака/
