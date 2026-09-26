@@ -8,9 +8,11 @@ static class Program
     static int Main(string[] args)
     {
         if (args.Length > 0 && args[0] == "--cli") return Cli.Run(args);
+        ApplicationConfiguration.Initialize();
+        var lab = !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("DUOSYNC_HOME")) || args.Contains("--snapshot") || Installer.IsDevBuild;
+        if (!lab && PackageGuard.HandOffIfPackaged()) return 0;
         AppLog.Start(args);
         UpdateGuard.OnStartup();
-        ApplicationConfiguration.Initialize();
         Application.ThreadException += (_, e) =>
         {
             AppLog.Error("ошибка в окне", e.Exception);

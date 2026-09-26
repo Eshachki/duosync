@@ -10,7 +10,7 @@ static class Installer
 {
     public static string InstalledExe => Path.Combine(AutoStart.InstallDir, "DuoSync.exe");
 
-    static bool IsDevBuild => Environment.ProcessPath is { } exe &&
+    public static bool IsDevBuild => Environment.ProcessPath is { } exe &&
                               exe.Contains(Path.DirectorySeparatorChar + "bin" + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
 
     public static bool ShouldInstall =>
