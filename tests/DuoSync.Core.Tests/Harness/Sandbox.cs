@@ -99,6 +99,7 @@ public sealed class Clone
             MeName = me, FriendName = friend, PushLfs = false,
             RetryDelays = new[] { TimeSpan.Zero, TimeSpan.Zero },
             Progress = ProgressLines.Add,
+            ToolCacheDir = Path.Combine(Path.GetTempPath(), "duosync-tests", "uym-cache"),
         };
         Engine = new SyncEngine(Repo, Options);
     }

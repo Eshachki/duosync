@@ -26,6 +26,8 @@ public sealed class SyncOptions
     public bool CanResolve { get; set; }
     /// <summary>Claude on the integrator's computer; set once it is found.</summary>
     public IConflictResolver? Resolver { get; set; }
+    /// <summary>Where the patched copies of UnityYAMLMerge live (§5.4).</summary>
+    public string ToolCacheDir { get; init; } = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DuoSync", "uym");
 }
 
 /// <summary>The friend's work waiting in <c>refs/heads/duosync/merge/&lt;name&gt;</c> for the integrator to merge.</summary>
@@ -49,7 +51,8 @@ public sealed class SyncEngine
     readonly IUnityBridge _unity;
     readonly Snapshots _snapshots;
     readonly Applier _applier;
-    readonly Merger _merger;
+    YamlMergeTool? _yamlTool;
+    bool _yamlToolLooked;
 
     public SyncEngine(Repo repo, SyncOptions options, IUnityBridge? unity = null)
     {
@@ -58,7 +61,6 @@ public sealed class SyncEngine
         _unity = unity ?? NoUnity.Instance;
         _snapshots = new Snapshots(repo);
         _applier = new Applier(repo, _snapshots, _unity);
-        _merger = new Merger(repo);
     }
 
     public Repo Repo => _repo;
@@ -155,13 +157,14 @@ public sealed class SyncEngine
         }
 
         string target;
+        IReadOnlyList<string> notes = Array.Empty<string>();
         if (await _repo.IsAncestorAsync(snapshot, theirs)) target = theirs;
         else
         {
-            var merge = await _merger.MergeAsync(snapshot, theirs, $"Слияние: {_opt.MeName} + {_opt.FriendName}", ct);
-            if (!merge.Clean)
-                return _opt.CanResolve ? ConflictResult(merge, "Получить") : await SubmitRequestAsync(snapshot, merge, ct);
-            target = merge.Commit!;
+            var merged = await AutoMergeAsync(snapshot, theirs, "Получить", ct);
+            if (merged.Commit == null) return merged.Stop!;
+            target = merged.Commit;
+            notes = merged.Notes;
         }
 
         var applied = await _applier.ApplyAsync(snapshot, target, "получение", ct);
@@ -171,6 +174,7 @@ public sealed class SyncEngine
         await _repo.UpdateRefAsync(ReceiveAfterRef, target);
         await _repo.UpdateRefAsync(ReceiveIncomingRef, theirs);
         var subjects = await _repo.CommitSubjectsAsync($"{snapshot}..{theirs}", 5);
+        foreach (var note in notes) await FeedAsync("merge", note);
         var text = $"Получено {Ru.Files(applied.Files.Count)} — прислал {_opt.FriendName}" +
                    (subjects.Count > 0 ? $" («{string.Join("», «", subjects)}»)" : "") + "." + UnityNote(applied);
         await FeedAsync("receive", text);
@@ -212,11 +216,12 @@ public sealed class SyncEngine
 
             if (theirs != null && !await _repo.IsAncestorAsync(theirs, head))
             {
-                var merge = await _merger.MergeAsync(head, theirs, $"Слияние: {_opt.MeName} + {_opt.FriendName}", ct);
-                if (!merge.Clean) return _opt.CanResolve ? ConflictResult(merge, "Отправить") : await SubmitRequestAsync(head, merge, ct);
-                var applied = await _applier.ApplyAsync(head, merge.Commit!, "слияние перед отправкой", ct);
+                var merged = await AutoMergeAsync(head, theirs, "Отправить", ct);
+                if (merged.Commit == null) return merged.Stop!;
+                var applied = await _applier.ApplyAsync(head, merged.Commit, "слияние перед отправкой", ct);
                 if (applied.Status != OpStatus.Done) return applied;
-                head = merge.Commit!;
+                foreach (var note in merged.Notes) await FeedAsync("merge", note);
+                head = merged.Commit;
             }
 
             if (head == theirs) return new OpResult(OpStatus.NothingToSend, "Нечего отправлять.");
@@ -389,13 +394,69 @@ public sealed class SyncEngine
             $"История на GitHub переписана (было {last[..7]}, стало {theirs[..7]}). Обмен остановлен, пока не решишь: вернуть как было или принять как на GitHub.");
     }
 
-    OpResult ConflictResult(MergeOutcome merge, string op)
-    {
-        var paths = merge.Tree.ConflictedPaths;
-        return new OpResult(OpStatus.Conflict,
+    OpResult ConflictResult(IReadOnlyList<string> paths, string op) =>
+        new(OpStatus.Conflict,
             $"«{op}»: то, что прислал {_opt.FriendName}, спорит с твоими правками ({Ru.Files(paths.Count)}: {string.Join(", ", paths.Take(3))}). " +
             "Ничего не применено, твоя работа сохранена. Нажми «Слить с Claude».")
         { ConflictedPaths = paths };
+
+    // ------------------------------------------------------------------ Слияние без Claude (L1–L3, L5)
+
+    YamlMergeTool? YamlTool()
+    {
+        if (_yamlToolLooked) return _yamlTool;
+        _yamlToolLooked = true;
+        try { _yamlTool = YamlMergeTool.Find(_repo.Root, _opt.ToolCacheDir); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { _yamlTool = null; }
+        return _yamlTool;
+    }
+
+    MergePipeline Pipeline() => new(_repo, YamlTool, YamlMergeTool.NeedsNoMappingFlag(_repo.Root));
+
+    async Task<string> CommitMergeAsync(string tree, string mine, string theirs, string? request = null)
+    {
+        var body = $"Слияние: {_opt.MeName} + {_opt.FriendName}\n\nDuoSync: merge\n" + (request != null ? $"DuoSync-Request: {request}\n" : "");
+        return (await _repo.Git.RunCheckedAsync(new[] { "commit-tree", tree, "-p", mine, "-p", theirs, "-F", "-" },
+            new GitRunOptions { StdIn = Encoding.UTF8.GetBytes(body) })).StdOutTrimmed;
+    }
+
+    /// <summary>
+    /// The merge every «Получить» and «Отправить» does: git's text merge, the rules and UnityYAMLMerge, then the tree
+    /// check. A commit when everything was decided without Claude; the friend's side also needs that nothing was
+    /// thrown away. Otherwise the button «Слить с Claude» (integrator) or a merge request (friend).
+    /// </summary>
+    async Task<(string? Commit, OpResult? Stop, IReadOnlyList<string> Notes)> AutoMergeAsync(string mine, string theirs, string op, CancellationToken ct)
+    {
+        var pipeline = await Pipeline().RunAsync(mine, theirs, ct);
+        if (pipeline.Stop != null) return (null, OpResult.Blocked(pipeline.Stop), Array.Empty<string>());
+        IReadOnlyList<string> disputed = pipeline.Paths;
+        if (pipeline.Clean && (_opt.CanResolve || !pipeline.DiscardsASide))
+        {
+            var commit = await CommitMergeAsync(pipeline.Tree, mine, theirs);
+            var problems = await TreeCheck.CheckAsync(_repo, commit, mine, theirs, ct);
+            if (problems.Count == 0) return (commit, null, pipeline.Notes);
+            await FeedAsync("check", "Проверка итога слияния: " + string.Join("; ", problems.Take(5)));
+            disputed = problems.Select(p => p[..p.IndexOf(": ", StringComparison.Ordinal)]).Distinct().ToList();
+        }
+        else if (pipeline.Clean) disputed = pipeline.Notes.Select(n => n[..Math.Max(0, n.IndexOf(':'))]).ToList();
+        return (null, _opt.CanResolve ? ConflictResult(disputed, op) : await SubmitRequestAsync(mine, disputed, ct), Array.Empty<string>());
+    }
+
+    /// <summary>Paths the tree check refused, as whole-file choices for Claude (it may take one side of each).</summary>
+    async Task<List<ConflictItem>> WholeFileItemsAsync(string mine, string theirs, IEnumerable<string> paths, IReadOnlyList<string> problems)
+    {
+        var mergeBase = await _repo.MergeBaseAsync(mine, theirs);
+        var items = new List<ConflictItem>();
+        foreach (var path in paths)
+        {
+            var (b, m, t) = (mergeBase != null ? await _repo.BlobAsync(mergeBase, path) : null,
+                await _repo.BlobAsync(mine, path), await _repo.BlobAsync(theirs, path));
+            items.Add(new ConflictItem(path, m == null || t == null ? ConflictKind.ModifyDelete : ConflictKind.Binary, b, m, t, "100644")
+            {
+                Disputes = problems.Where(p => p.StartsWith(path + ": ", StringComparison.Ordinal)).ToList(),
+            });
+        }
+        return items;
     }
 
     // ------------------------------------------------------------------ Просьба о слиянии (у друга, §3.13)
@@ -416,9 +477,8 @@ public sealed class SyncEngine
     /// No Claude here: the snapshot goes to the person's own service branch on GitHub and waits for the integrator.
     /// Nothing is chosen and nothing applied; the next request of the same person normally fast-forwards the branch.
     /// </summary>
-    async Task<OpResult> SubmitRequestAsync(string work, MergeOutcome merge, CancellationToken ct)
+    async Task<OpResult> SubmitRequestAsync(string work, IReadOnlyList<string> paths, CancellationToken ct)
     {
-        var paths = merge.Tree.ConflictedPaths;
         if (_opt.PushLfs)
         {
             var lfs = await WithRetryAsync(() => _repo.Git.RunAsync(new[] { "lfs", "push", _repo.Remote, work },
@@ -494,17 +554,31 @@ public sealed class SyncEngine
         var snapshot = await _snapshots.SnapshotAsync($"{_opt.MeName}: незаконченная работа (сохранено перед слиянием)", "snapshot");
         if (snapshot == null || await _repo.IsAncestorAsync(theirs, snapshot)) return new OpResult(OpStatus.UpToDate, "Уже слито.");
 
-        string target;
+        string? target = null;
         MergeResolution? resolution = null;
+        IReadOnlyList<string> notes = Array.Empty<string>();
         if (await _repo.IsAncestorAsync(snapshot, theirs)) target = theirs;
         else
         {
-            var merge = await _merger.MergeAsync(snapshot, theirs, $"Слияние: {_opt.MeName} + {_opt.FriendName}", ct);
-            if (merge.Clean) target = merge.Commit!;
-            else
+            var pipeline = await Pipeline().RunAsync(snapshot, theirs, ct);
+            if (pipeline.Stop != null) return OpResult.Blocked(pipeline.Stop);
+            notes = pipeline.Notes;
+            if (pipeline.Clean)
             {
-                var job = await MergeJob.PrepareAsync(_repo, snapshot, theirs, merge.Tree, _opt.MeName, _opt.FriendName,
-                    Path.GetFileName(_repo.Root.TrimEnd('\\', '/')), request?.Sha, ct);
+                var commit = await CommitMergeAsync(pipeline.Tree, snapshot, theirs, request?.Sha);
+                var problems = await TreeCheck.CheckAsync(_repo, commit, snapshot, theirs, ct);
+                if (problems.Count == 0) target = commit;
+                else
+                {
+                    // The deterministic result broke something: those files go to Claude as whole-file choices.
+                    var paths = problems.Select(p => p[..p.IndexOf(": ", StringComparison.Ordinal)]).Distinct();
+                    pipeline = pipeline with { Unresolved = await WholeFileItemsAsync(snapshot, theirs, paths, problems) };
+                }
+            }
+            if (target == null)
+            {
+                var job = await MergeJob.PrepareAsync(_repo, snapshot, theirs, pipeline, _opt.MeName, _opt.FriendName,
+                    Path.GetFileName(_repo.Root.TrimEnd('\\', '/')), request?.Sha, YamlTool(), YamlMergeTool.NeedsNoMappingFlag(_repo.Root), ct);
                 var (commit, result, failed) = await ResolveWithAsync(job, ask, ct);
                 if (commit == null) return failed!;
                 target = commit;
@@ -519,6 +593,7 @@ public sealed class SyncEngine
         await _repo.UpdateRefAsync(ReceiveIncomingRef, theirs);
 
         var feed = new ProjectFeed(await _repo.DuoDirAsync());
+        foreach (var note in notes) feed.Add("merge", note);
         foreach (var d in resolution?.Files ?? Array.Empty<Decision>())
             feed.Add("claude", $"{d.Path}: {DecisionRu(d.Kind)} — {d.Why}");
         var text = (resolution != null

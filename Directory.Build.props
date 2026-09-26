@@ -4,6 +4,6 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <Deterministic>true</Deterministic>
-    <Version>0.3.5</Version>
+    <Version>0.3.6</Version>
   </PropertyGroup>
 </Project>
