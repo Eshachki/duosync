@@ -34,6 +34,13 @@ sealed class ProjectController
         Engine = new SyncEngine(new Repo(git), Options, new DuoSync.Core.Unity.UnityBridgeClient(entry.Path));
     }
 
+    /// <summary>Role and resolver: the integrator merges with Claude, the other side sends merge requests.</summary>
+    public void ApplyClaude(string? claudeExe, bool integrator)
+    {
+        Options.CanResolve = integrator;
+        Options.Resolver = claudeExe != null ? new DuoSync.Core.Merge.ClaudeResolver(claudeExe, Entry.Path) : null;
+    }
+
     public void SetTodoOpen(int count)
     {
         if (TodoOpen == count) return;

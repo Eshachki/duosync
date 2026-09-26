@@ -12,6 +12,11 @@ public enum OpStatus
     Blocked,
     /// <summary>Real conflict; nothing applied, local work is safe in a snapshot commit.</summary>
     Conflict,
+    /// <summary>
+    /// Real conflict on the computer without Claude: the work went to GitHub as a merge request (§3.13)
+    /// and waits for the integrator. Nothing applied, local work is safe.
+    /// </summary>
+    Requested,
     /// <summary>No connection to GitHub; local work is safe.</summary>
     Offline,
     /// <summary>Something failed after the start; the folder was returned to its previous state.</summary>

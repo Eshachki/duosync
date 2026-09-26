@@ -1,7 +1,9 @@
 using System.Collections.Concurrent;
+using System.Security.Cryptography;
 using System.Text;
 using DuoSync.Core.Feed;
 using DuoSync.Core.Git;
+using DuoSync.Core.Merge;
 using DuoSync.Core.Unity;
 
 namespace DuoSync.Core.Ops;
@@ -17,7 +19,17 @@ public sealed class SyncOptions
     public IReadOnlyList<TimeSpan> RetryDelays { get; init; } = new[] { TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(90) };
     /// <summary>Short progress lines for the window while an operation waits ("нет связи, повторю через 30 с").</summary>
     public Action<string>? Progress { get; init; }
+    /// <summary>
+    /// This computer resolves conflicts (the integrator: Claude Code is here). Elsewhere a conflict goes to GitHub
+    /// as a merge request and waits for the integrator (§3.13).
+    /// </summary>
+    public bool CanResolve { get; set; }
+    /// <summary>Claude on the integrator's computer; set once it is found.</summary>
+    public IConflictResolver? Resolver { get; set; }
 }
+
+/// <summary>The friend's work waiting in <c>refs/heads/duosync/merge/&lt;name&gt;</c> for the integrator to merge.</summary>
+public sealed record MergeRequestInfo(string Ref, string Sha, string Author, string Subject, IReadOnlyList<string> Files, DateTimeOffset At);
 
 /// <summary>
 /// «Получить», «Отправить» and «Откатить получение» for one project (§3.6–3.9). Stage 1: clean merges only;
@@ -56,7 +68,7 @@ public sealed class SyncEngine
     SemaphoreSlim RepoLock => RepoLocks.GetOrAdd(Path.GetFullPath(_repo.Root), _ => new SemaphoreSlim(1, 1));
 
     /// <summary>Background status for the tray and notifications; skipped (Busy) while an operation runs.</summary>
-    public Task<ProjectStatus> CheckStatusAsync(CancellationToken ct = default) => new StatusChecker(_repo).CheckAsync(RepoLock, ct);
+    public Task<ProjectStatus> CheckStatusAsync(CancellationToken ct = default) => new StatusChecker(_repo, _opt.CanResolve).CheckAsync(RepoLock, ct);
 
     async Task<OpResult> Locked(Func<Task<OpResult>> body, CancellationToken ct)
     {
@@ -64,8 +76,8 @@ public sealed class SyncEngine
         try
         {
             var result = await body();
-            // Every outcome goes to the project feed; successes are written by the operation itself with details.
-            if (!result.Succeeded)
+            // Every outcome goes to the project feed; successes and requests are written by the operation itself.
+            if (!result.Succeeded && result.Status != OpStatus.Requested)
                 await FeedAsync(result.Status switch
                 {
                     OpStatus.Conflict => "conflict",
@@ -148,7 +160,7 @@ public sealed class SyncEngine
         {
             var merge = await _merger.MergeAsync(snapshot, theirs, $"Слияние: {_opt.MeName} + {_opt.FriendName}", ct);
             if (!merge.Clean)
-                return ConflictResult(merge, "Получить");
+                return _opt.CanResolve ? ConflictResult(merge, "Получить") : await SubmitRequestAsync(snapshot, merge, ct);
             target = merge.Commit!;
         }
 
@@ -201,7 +213,7 @@ public sealed class SyncEngine
             if (theirs != null && !await _repo.IsAncestorAsync(theirs, head))
             {
                 var merge = await _merger.MergeAsync(head, theirs, $"Слияние: {_opt.MeName} + {_opt.FriendName}", ct);
-                if (!merge.Clean) return ConflictResult(merge, "Отправить");
+                if (!merge.Clean) return _opt.CanResolve ? ConflictResult(merge, "Отправить") : await SubmitRequestAsync(head, merge, ct);
                 var applied = await _applier.ApplyAsync(head, merge.Commit!, "слияние перед отправкой", ct);
                 if (applied.Status != OpStatus.Done) return applied;
                 head = merge.Commit!;
@@ -330,7 +342,9 @@ public sealed class SyncEngine
     public async Task<OpResult?> PreflightAsync(CancellationToken ct = default)
     {
         var gitDir = await _repo.GitDirAsync();
-        if (!Setup.ProjectSetup.IsPrepared(_repo.Root))
+        // An empty clone (the friend downloaded the repository before its first send) has nothing to protect:
+        // the first «Получить» brings the preparation itself.
+        if (!Setup.ProjectSetup.IsPrepared(_repo.Root) && await _repo.HeadAsync() != null)
             return OpResult.Blocked("Проект не подготовлен для DuoSync. Нажми «Подготовить проект».");
         await new Setup.ProjectSetup(_repo, _opt.MeName, _opt.FriendName).EnsureLocalAsync();
         if (!_unity.IsOpen && UnityDetector.IsProjectOpen(_repo.Root))
@@ -379,10 +393,197 @@ public sealed class SyncEngine
     {
         var paths = merge.Tree.ConflictedPaths;
         return new OpResult(OpStatus.Conflict,
-            $"«{op}»: то, что прислал {_opt.FriendName}, спорит с твоими правками ({Ru.Files(paths.Count)}). Ничего не применено, твоя работа сохранена. " +
-            "Слияние через Claude появится на этапе 3.")
+            $"«{op}»: то, что прислал {_opt.FriendName}, спорит с твоими правками ({Ru.Files(paths.Count)}: {string.Join(", ", paths.Take(3))}). " +
+            "Ничего не применено, твоя работа сохранена. Нажми «Слить с Claude».")
         { ConflictedPaths = paths };
     }
+
+    // ------------------------------------------------------------------ Просьба о слиянии (у друга, §3.13)
+
+    /// <summary>This person's latest merge request (local ref): the notification «слил» comes once it is in main.</summary>
+    public const string RequestRef = "refs/duosync/request";
+
+    string RequestBranchRef => $"refs/heads/duosync/merge/{Slug(_opt.MeName)}";
+
+    /// <summary>A branch name from a person's name: ASCII letters and digits, otherwise a short hash.</summary>
+    public static string Slug(string name)
+    {
+        var ascii = new string(name.ToLowerInvariant().Where(c => c is >= 'a' and <= 'z' or >= '0' and <= '9' or '-').ToArray()).Trim('-');
+        return ascii.Length > 0 ? ascii : "u" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(name)))[..8].ToLowerInvariant();
+    }
+
+    /// <summary>
+    /// No Claude here: the snapshot goes to the person's own service branch on GitHub and waits for the integrator.
+    /// Nothing is chosen and nothing applied; the next request of the same person normally fast-forwards the branch.
+    /// </summary>
+    async Task<OpResult> SubmitRequestAsync(string work, MergeOutcome merge, CancellationToken ct)
+    {
+        var paths = merge.Tree.ConflictedPaths;
+        if (_opt.PushLfs)
+        {
+            var lfs = await WithRetryAsync(() => _repo.Git.RunAsync(new[] { "lfs", "push", _repo.Remote, work },
+                new GitRunOptions { Timeout = TimeSpan.FromMinutes(60) }, ct), "выгрузка файлов LFS", ct);
+            if (!lfs.Ok) return FetchFailed(lfs);
+        }
+        var branch = RequestBranchRef;
+        Task<GitResult> Push() => WithRetryAsync(() => _repo.Git.RunAsync(new[] { "push", "--porcelain", _repo.Remote, $"{work}:{branch}" },
+            new GitRunOptions { Timeout = TimeSpan.FromMinutes(15) }, ct), "отправка на слияние", ct);
+        var push = await Push();
+        var mine = GitParse.ParsePushPorcelain(push.StdOut).FirstOrDefault(x => x.Ref == branch);
+        if (mine?.Status == PushRefStatus.Rejected || (!push.Ok && GitErrors.Classify(push) == GitErrorKind.NonFastForward))
+        {
+            // The old request is not an ancestor (after an undo): replace this person's own service branch, never main.
+            await _repo.Git.RunAsync(new[] { "push", _repo.Remote, "--delete", branch }, new GitRunOptions { Timeout = TimeSpan.FromMinutes(5) }, ct);
+            push = await Push();
+            mine = GitParse.ParsePushPorcelain(push.StdOut).FirstOrDefault(x => x.Ref == branch);
+        }
+        if (!push.Ok || mine is not { Status: PushRefStatus.Ok or PushRefStatus.UpToDate }) return FetchFailed(push);
+
+        await _repo.UpdateRefAsync(RequestRef, work);
+        var msg = $"Твои правки пересекаются с тем, что прислал {_opt.FriendName}: {Ru.Files(paths.Count)} ({string.Join(", ", paths.Take(3))}). " +
+                  $"Работа сохранена и отправлена на слияние, его сделает {_opt.FriendName}. Когда будет готово, придёт уведомление: тогда нажми «Получить».";
+        await FeedAsync("request", msg);
+        return new OpResult(OpStatus.Requested, msg) { ConflictedPaths = paths };
+    }
+
+    /// <summary>The integrator merged the request: forget it (the notification was shown).</summary>
+    public async Task ClearRequestAsync() => await _repo.DeleteRefAsync(RequestRef);
+
+    // ------------------------------------------------------------------ Слить с Claude (у сводящего, §5.5)
+
+    /// <summary>
+    /// Merges what spoils the exchange: main (after a conflicting «Получить»/«Отправить») or the friend's request.
+    /// Claude resolves the disputed paths in the work folder; the program checks, commits and applies.
+    /// Push stays with the person («Отправить»). <paramref name="ask"/> shows Claude's question and returns the answer.
+    /// </summary>
+    public Task<OpResult> MergeWithClaudeAsync(MergeRequestInfo? request, Func<string, Task<string?>> ask, CancellationToken ct = default)
+        => Locked(() => MergeWithClaudeCoreAsync(request, ask, ct), ct);
+
+    async Task<OpResult> MergeWithClaudeCoreAsync(MergeRequestInfo? request, Func<string, Task<string?>> ask, CancellationToken ct)
+    {
+        if (!_opt.CanResolve || _opt.Resolver == null)
+            return OpResult.Blocked("На этом компьютере нет Claude Code: сливать может только тот, у кого он есть.");
+        var pre = await PreflightAsync(ct);
+        if (pre != null) return pre;
+        var fetch = await FetchWithRetryAsync(ct);
+        if (!fetch.Ok) return FetchFailed(fetch);
+        var main = await _repo.RevParseAsync(_repo.RemoteBranchRef);
+
+        string theirs;
+        if (request != null)
+        {
+            var local = $"refs/remotes/{_repo.Remote}/{request.Ref["refs/heads/".Length..]}";
+            var got = await WithRetryAsync(() => _repo.Git.RunAsync(new[] { "fetch", "--no-tags", _repo.Remote, $"+{request.Ref}:{local}" },
+                new GitRunOptions { Timeout = TimeSpan.FromMinutes(30) }, ct), "получение просьбы", ct);
+            if (!got.Ok) return FetchFailed(got);
+            theirs = await _repo.ReadRefAsync(local) ?? request.Sha;
+            var current = await _repo.HeadAsync();
+            if (main != null && current != null && !await _repo.IsAncestorAsync(main, current))
+                return OpResult.Blocked("Сначала нажми «Получить»: на GitHub есть то, чего у тебя ещё нет. Потом «Слить с Claude».");
+        }
+        else if (main == null) return new OpResult(OpStatus.UpToDate, "Сливать нечего.");
+        else theirs = main;
+
+        if (_opt.PushLfs)
+            await _repo.Git.RunAsync(new[] { "lfs", "fetch", _repo.Remote, theirs }, new GitRunOptions { Timeout = TimeSpan.FromMinutes(30) }, ct);
+        if (_unity.IsOpen)
+        {
+            var save = await _unity.SaveAsync(ct);
+            if (!save.Ok) return OpResult.Blocked(save.Error ?? "Unity не сохранил сцены.");
+        }
+        var snapshot = await _snapshots.SnapshotAsync($"{_opt.MeName}: незаконченная работа (сохранено перед слиянием)", "snapshot");
+        if (snapshot == null || await _repo.IsAncestorAsync(theirs, snapshot)) return new OpResult(OpStatus.UpToDate, "Уже слито.");
+
+        string target;
+        MergeResolution? resolution = null;
+        if (await _repo.IsAncestorAsync(snapshot, theirs)) target = theirs;
+        else
+        {
+            var merge = await _merger.MergeAsync(snapshot, theirs, $"Слияние: {_opt.MeName} + {_opt.FriendName}", ct);
+            if (merge.Clean) target = merge.Commit!;
+            else
+            {
+                var job = await MergeJob.PrepareAsync(_repo, snapshot, theirs, merge.Tree, _opt.MeName, _opt.FriendName,
+                    Path.GetFileName(_repo.Root.TrimEnd('\\', '/')), request?.Sha, ct);
+                var (commit, result, failed) = await ResolveWithAsync(job, ask, ct);
+                if (commit == null) return failed!;
+                target = commit;
+                resolution = result;
+            }
+        }
+
+        var applied = await _applier.ApplyAsync(snapshot, target, "слияние", ct);
+        if (applied.Status != OpStatus.Done) return applied;
+        await _repo.UpdateRefAsync(ReceiveBeforeRef, snapshot);
+        await _repo.UpdateRefAsync(ReceiveAfterRef, target);
+        await _repo.UpdateRefAsync(ReceiveIncomingRef, theirs);
+
+        var feed = new ProjectFeed(await _repo.DuoDirAsync());
+        foreach (var d in resolution?.Files ?? Array.Empty<Decision>())
+            feed.Add("claude", $"{d.Path}: {DecisionRu(d.Kind)} — {d.Why}");
+        var text = (resolution != null
+                       ? $"Claude слил спорное ({Ru.Files(resolution.Files.Count)})" + (resolution.Summary.Length > 0 ? $": {resolution.Summary.TrimEnd('.')}." : ".")
+                       : "Слито без споров.") +
+                   $" Применено {Ru.Files(applied.Files.Count)}. Проверь и нажми «Отправить»." + UnityNote(applied);
+        feed.Add("merge", text);
+        return applied with { Message = text };
+    }
+
+    /// <summary>Task, Claude's question and the person's answer, a second attempt with the check's findings; then the commit.</summary>
+    async Task<(string? Commit, MergeResolution? Result, OpResult? Failed)> ResolveWithAsync(MergeJob job, Func<string, Task<string?>> ask, CancellationToken ct)
+    {
+        var feed = new ProjectFeed(await _repo.DuoDirAsync());
+        feed.Add("claude", $"Claude сливает {Ru.Files(job.Items.Count)}: {string.Join(", ", job.Items.Take(5).Select(i => i.Path))}");
+        var session = Guid.NewGuid().ToString();
+        var message = job.TaskText;
+        var resume = false;
+        int corrections = 0, questions = 0;
+        while (true)
+        {
+            job.ClearResult();
+            _opt.Progress?.Invoke("Claude сливает…");
+            var outcome = await _opt.Resolver!.ResolveAsync(job, message, session, resume, line =>
+            {
+                feed.Add("claude", line);
+                _opt.Progress?.Invoke(line);
+            }, ct);
+            resume = true;
+            if (!outcome.Ok)
+                return (null, null, OpResult.Blocked($"{outcome.Error}. Ничего не применено, работа обоих цела. Нажми «Слить с Claude» ещё раз, когда будет можно."));
+
+            var result = job.ReadResult();
+            if (result?.Question is { } question && questions++ < 5)
+            {
+                feed.Add("claude", "Claude спрашивает: " + question);
+                var answer = await ask(question);
+                if (string.IsNullOrWhiteSpace(answer))
+                    return (null, null, OpResult.Blocked("Слияние отложено: Claude ждёт ответа на вопрос. Ничего не применено, нажми «Слить с Claude», когда будешь готов ответить."));
+                feed.Add("me", "Ответ: " + answer);
+                message = answer;
+                continue;
+            }
+            var problems = result == null ? new[] { "result.json нет или он не разбирается как JSON" } : job.Validate(result);
+            if (problems.Count == 0)
+            {
+                try { return (await job.CommitAsync(_repo, result!, $"Слияние: {_opt.MeName} + {_opt.FriendName}\n\nСпорные файлы ({job.Items.Count}) решил Claude.", ct), result, null); }
+                catch (InvalidDataException e) { problems = new[] { e.Message }; }
+            }
+            feed.Add("claude", "Проверка программы не прошла: " + string.Join("; ", problems.Take(5)));
+            if (corrections++ >= 2)
+                return (null, null, OpResult.Blocked("Claude не прошёл проверки программы: " + string.Join("; ", problems.Take(3)) + ". Ничего не применено."));
+            message = "Проверка программы не прошла, исправь и запиши result.json заново:\n- " + string.Join("\n- ", problems);
+        }
+    }
+
+    static string DecisionRu(string kind) => kind switch
+    {
+        "combine" => "объединил обе правки",
+        "choice-mine" => "взял мою версию",
+        "choice-theirs" => "взял версию друга",
+        "keep" => "оставил файл",
+        "delete" => "удалил файл",
+        _ => kind,
+    };
 
     static OpResult FetchFailed(GitResult r) => GitErrors.Classify(r) is GitErrorKind.Network or GitErrorKind.Timeout
         ? new OpResult(OpStatus.Offline, "Нет связи с GitHub. Работа сохранена у тебя.") { Detail = r.StdErr }

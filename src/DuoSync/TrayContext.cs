@@ -44,7 +44,7 @@ sealed class TrayContext : ApplicationContext
         EnsureIdentity();
         AutoStart.Apply(Settings.AutoStart);
         foreach (var p in Settings.Projects.Where(p => Directory.Exists(p.Path)))
-            Controllers.Add(new ProjectController(p, Settings));
+            Controllers.Add(NewController(p));
 
         _balloonClick = () => ShowWindow();
         _tray = new NotifyIcon { Icon = Icons.For(SyncState.Busy), Text = "DuoSync", Visible = true, ContextMenuStrip = new ContextMenuStrip() };
@@ -54,6 +54,7 @@ sealed class TrayContext : ApplicationContext
         var ui = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
         SingleInstance.Listen(ui, () => ShowWindow(), ExitThread);
         ui.Post(_ => AfterStart(), null);
+        _ = DetectClaudeAsync();
 
         _timer = new System.Windows.Forms.Timer { Interval = Math.Max(15, Settings.PollSeconds) * 1000 };
         _timer.Tick += async (_, _) => await PollAsync();
@@ -61,6 +62,36 @@ sealed class TrayContext : ApplicationContext
 
         if (showWindow || Controllers.Count == 0 || snapshotPath != null) ShowWindow();
         _ = snapshotPath == null ? PollAsync() : SnapshotAndExitAsync(snapshotPath);
+    }
+
+    /// <summary>Claude Code on this computer, once looked for: its presence makes this computer the integrator.</summary>
+    public Core.Claude.ClaudeStatus? Claude { get; private set; }
+
+    ProjectController NewController(ProjectEntry entry)
+    {
+        var c = new ProjectController(entry, Settings);
+        c.ApplyClaude(Claude?.Exe, Settings.Integrator);
+        return c;
+    }
+
+    async Task DetectClaudeAsync()
+    {
+        try
+        {
+            Claude = await Task.Run(() => Core.Claude.ClaudeCli.DetectAsync());
+            AppLog.Write($"claude: {Claude.Exe ?? "none"} {Claude.Version} loggedIn={Claude.LoggedIn}");
+            if (Claude.Installed && !Settings.Integrator)
+            {
+                Settings.Integrator = true;
+                Settings.Save();
+            }
+            foreach (var c in Controllers) c.ApplyClaude(Claude.Exe, Settings.Integrator);
+            _form?.ReloadProjects();
+        }
+        catch (Exception e) when (e is IOException or System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            AppLog.Error("claude detection", e);
+        }
     }
 
     /// <summary>The message loop runs: confirm a fresh update to its watchdog and say what changed, or why it was undone.</summary>
@@ -235,6 +266,21 @@ sealed class TrayContext : ApplicationContext
     void MaybeNotify(ProjectController c)
     {
         var st = c.Status;
+        // The integrator: the friend asks to merge (one notification per request commit).
+        foreach (var r in st?.Requests ?? Array.Empty<MergeRequestInfo>())
+        {
+            if (r.Sha == c.Entry.NotifiedRequest) continue;
+            c.Entry.NotifiedRequest = r.Sha;
+            Settings.Save();
+            Notify($"DuoSync — {c.Entry.Name}", $"{Friend} просит слить «{r.Subject}»: {Ru.Files(r.Files.Count)}. Нажми, чтобы открыть, там кнопка «Слить с Claude».",
+                onClick: () => ShowWindow().SelectProject(c));
+        }
+        // The friend's side: the integrator merged the request and sent it.
+        if (st is { RequestMerged: true })
+        {
+            Notify($"DuoSync — {c.Entry.Name}", $"{Friend} слил твою работу. Нажми «Получить».", onClick: () => ShowWindow().SelectProject(c));
+            _ = c.Engine.ClearRequestAsync();
+        }
         if (st is not { State: SyncState.Incoming or SyncState.Both } || st.RemoteSha == null || st.RemoteSha == c.Entry.NotifiedSha)
             return;
         c.Entry.NotifiedSha = st.RemoteSha;
@@ -360,7 +406,7 @@ sealed class TrayContext : ApplicationContext
         Settings.Save();
         Controllers.Clear();
         foreach (var p in Settings.Projects.Where(p => Directory.Exists(p.Path)))
-            Controllers.Add(new ProjectController(p, Settings));
+            Controllers.Add(NewController(p));
         _form?.ReloadProjects();
         _ = PollAsync();
     }
@@ -837,7 +883,7 @@ sealed class TrayContext : ApplicationContext
         var entry = new ProjectEntry { Path = dir, Name = Path.GetFileName(dir.TrimEnd(Path.DirectorySeparatorChar, '/')) };
         Settings.Projects.Add(entry);
         Settings.Save();
-        var controller = new ProjectController(entry, Settings);
+        var controller = NewController(entry);
         Controllers.Add(controller);
         _form?.ReloadProjects();
         _nextDiscovery = DateTime.MinValue;

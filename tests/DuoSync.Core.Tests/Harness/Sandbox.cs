@@ -86,18 +86,21 @@ public sealed class Clone
     public GitRunner Git { get; }
     public Repo Repo { get; }
     public SyncEngine Engine { get; }
+    /// <summary>Tests switch the role here: CanResolve and Resolver make this clone the integrator.</summary>
+    public SyncOptions Options { get; }
 
     Clone(string dir, string me, string friend)
     {
         Dir = dir;
         Git = new GitRunner(dir, me, me.ToLowerInvariant() + "@example.invalid");
         Repo = new Repo(Git);
-        Engine = new SyncEngine(Repo, new SyncOptions
+        Options = new SyncOptions
         {
             MeName = me, FriendName = friend, PushLfs = false,
             RetryDelays = new[] { TimeSpan.Zero, TimeSpan.Zero },
             Progress = ProgressLines.Add,
-        });
+        };
+        Engine = new SyncEngine(Repo, Options);
     }
 
     public static async Task<Clone> CreateAsync(Sandbox sb, string name, string me, string friend)

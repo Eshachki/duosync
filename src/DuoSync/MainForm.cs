@@ -13,6 +13,9 @@ sealed class MainForm : Form
     readonly FlowLayoutPanel _available = new() { Dock = DockStyle.Fill, AutoSize = true, Visible = false };
     readonly Label _incoming = new() { AutoSize = true, Font = new Font("Segoe UI", 10.5f, FontStyle.Bold) };
     readonly Label _unsent = new() { AutoSize = true };
+    /// <summary>A merge request: the friend's one waiting here (integrator) or own one waiting there.</summary>
+    readonly Label _request = new() { AutoSize = true, ForeColor = Color.FromArgb(170, 90, 0) };
+    readonly Button _merge = new() { Text = "Слить с Claude", AutoSize = true, Height = 36, Visible = false, Font = new Font("Segoe UI", 10f, FontStyle.Bold) };
     readonly Button _receive = new() { Text = "Получить", Width = 150, Height = 36 };
     readonly Button _send = new() { Text = "Отправить", Width = 150, Height = 36 };
     readonly Button _undo = new() { Text = "Откатить получение", AutoSize = true, Height = 36 };
@@ -37,7 +40,7 @@ sealed class MainForm : Form
         top.Controls.AddRange(new Control[] { new Label { Text = "Проект:", AutoSize = true, Padding = new Padding(0, 6, 0, 0) }, _projects, _add });
 
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
-        buttons.Controls.AddRange(new Control[] { _prepare, _receive, _send, _undo, _check, _todo });
+        buttons.Controls.AddRange(new Control[] { _prepare, _merge, _receive, _send, _undo, _check, _todo });
 
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, Padding = new Padding(12) };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -45,12 +48,13 @@ sealed class MainForm : Form
         layout.Controls.Add(_available);
         layout.Controls.Add(_incoming);
         layout.Controls.Add(_unsent);
+        layout.Controls.Add(_request);
         layout.Controls.Add(buttons);
         layout.Controls.Add(_message);
         layout.Controls.Add(_result);
         layout.Controls.Add(new Label { Text = "Лента проекта", AutoSize = true, ForeColor = Color.DimGray });
         layout.Controls.Add(_feed);
-        for (int i = 0; i < 8; i++) layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        for (int i = 0; i < 9; i++) layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         Controls.Add(layout);
 
@@ -73,6 +77,14 @@ sealed class MainForm : Form
         };
         _check.Click += async (_, _) => { if (Current != null) await Current.RefreshAsync(); };
         _prepare.Click += async (_, _) => await PrepareAsync();
+        _merge.Click += async (_, _) =>
+        {
+            var c = Current;
+            if (c == null) return;
+            // Own conflict first (main is needed before a request can be merged), otherwise the friend's request.
+            var request = c.LastResult?.Status == OpStatus.Conflict ? null : c.Status?.Requests.FirstOrDefault();
+            await RunAsync(e => e.MergeWithClaudeAsync(request, question => Task.FromResult(AskDialog.Ask(this, question))));
+        };
         _todo.Click += (_, _) => { if (Current is { } c) _app.ShowTodo(c); };
         Resize += (_, _) => FitLabels();
         FitLabels();
@@ -127,7 +139,7 @@ sealed class MainForm : Form
     void FitLabels()
     {
         var width = Math.Max(300, ClientSize.Width - 40);
-        _incoming.MaximumSize = _unsent.MaximumSize = _result.MaximumSize = new Size(width, 0);
+        _incoming.MaximumSize = _unsent.MaximumSize = _request.MaximumSize = _result.MaximumSize = new Size(width, 0);
     }
 
     async Task PrepareAsync()
@@ -179,7 +191,10 @@ sealed class MainForm : Form
         if (c == null || c.Busy) return null;
         var r = await c.RunAsync(op);
         _result.Text = r.Message;
-        _result.ForeColor = r.Succeeded ? Color.FromArgb(30, 110, 50) : r.Status == OpStatus.Offline ? Color.DimGray : Color.FromArgb(170, 30, 30);
+        _result.ForeColor = r.Succeeded ? Color.FromArgb(30, 110, 50)
+            : r.Status is OpStatus.Offline ? Color.DimGray
+            : r.Status is OpStatus.Requested or OpStatus.Conflict ? Color.FromArgb(170, 90, 0)
+            : Color.FromArgb(170, 30, 30);
         return r;
     }
 
@@ -210,10 +225,19 @@ sealed class MainForm : Form
             _incoming.Text = _app.Available.Count > 0
                 ? "Проектов на этом компьютере пока нет. Скачай проект кнопкой выше."
                 : "Проектов пока нет. Нажми «Добавить проект…».";
-            _unsent.Text = "";
+            _unsent.Text = _request.Text = "";
+            _merge.Visible = false;
             return;
         }
         var st = c.Status;
+        var request = st?.Requests.FirstOrDefault();
+        _merge.Visible = c.Options.CanResolve && (c.LastResult?.Status == OpStatus.Conflict || request != null);
+        _merge.Enabled = enabled;
+        _request.Text = request != null
+            ? $"{_app.Friend} просит слить «{request.Subject}»: {Ru.Files(request.Files.Count)} (с {request.At.ToLocalTime():dd.MM HH:mm}). Нажми «Слить с Claude»."
+            : st?.RequestWaitingSince is { } since
+                ? $"Твоя работа ждёт слияния с {since.ToLocalTime():dd.MM HH:mm}, сольёт {_app.Friend}. Работать можно дальше, лучше в других файлах."
+                : "";
         var friend = _app.Friend;
         _incoming.ForeColor = Icons.ColorOf(st?.State ?? SyncState.Busy);
         _incoming.Text = c.Busy ? "Идёт операция… " + (c.Progress ?? "") : st?.State switch

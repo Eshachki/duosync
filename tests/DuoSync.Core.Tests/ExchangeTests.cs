@@ -73,7 +73,8 @@ public class ExchangeTests
 
         var got = await sb.Friend.Engine.ReceiveAsync();
 
-        Assert.Equal(OpStatus.Conflict, got.Status);
+        // Without Claude on this computer the conflict becomes a merge request (MergeTests follows it further).
+        Assert.Equal(OpStatus.Requested, got.Status);
         Assert.Contains(Player, got.ConflictedPaths);
         Assert.Contains("speed = 3", sb.Friend.Read(Player));
         Assert.False(await sb.Friend.Repo.HasTrackedChangesAsync()); // his edit is safe in the snapshot commit
@@ -248,6 +249,30 @@ public class ExchangeTests
 
         Assert.Equal(OpStatus.Done, sent.Status);
         Assert.Equal(await sb.Owner.HeadAsync(), await new DuoSync.Core.Git.GitRunner(empty, "t", "t@x").OutAsync("rev-parse", "main"));
+    }
+
+    [Fact]
+    public async Task Friend_who_downloaded_the_empty_repository_gets_the_first_send()
+    {
+        await using var sb = await CreateAsync();
+        var empty = Path.Combine(sb.Root, "empty.git");
+        await sb.Owner.Git.RunCheckedAsync("init", "--bare", "-b", "main", empty);
+        await sb.Owner.Git.RunCheckedAsync("remote", "set-url", "origin", empty);
+        await sb.Owner.Repo.DeleteRefAsync(sb.Owner.Repo.RemoteBranchRef);
+        await sb.Owner.Repo.DeleteRefAsync(SyncEngine.LastRemoteRef);
+        // The friend downloads the project in the seconds between repository creation and the first send.
+        var friendDir = Path.Combine(sb.Root, "early");
+        await sb.Owner.Git.RunCheckedAsync("clone", "-q", empty, friendDir);
+        var friend = new SyncEngine(new DuoSync.Core.Git.Repo(new DuoSync.Core.Git.GitRunner(friendDir, "Боря", "borya@example.invalid")),
+            new SyncOptions { MeName = "Боря", FriendName = "Аня", PushLfs = false, RetryDelays = new[] { TimeSpan.Zero } });
+        Assert.NotEqual(SyncState.NotPrepared, (await friend.CheckStatusAsync()).State);
+
+        Assert.Equal(OpStatus.Done, (await sb.Owner.Engine.SendAsync("Первая заливка")).Status);
+        var got = await friend.ReceiveAsync();
+
+        Assert.Equal(OpStatus.Done, got.Status);
+        Assert.True(DuoSync.Core.Setup.ProjectSetup.IsPrepared(friendDir));
+        Assert.Equal(await sb.Owner.HeadAsync(), await friend.Repo.HeadAsync());
     }
 
     [Fact]

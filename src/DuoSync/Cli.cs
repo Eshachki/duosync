@@ -27,8 +27,18 @@ static class Cli
         var email = string.IsNullOrWhiteSpace(settings.MeEmail) ? "duosync@example.invalid" : settings.MeEmail;
         var folder = Path.GetFullPath(args[2]);
         var repo = new Repo(new GitRunner(folder, me, email));
-        var engine = new SyncEngine(repo, new SyncOptions { MeName = me, FriendName = friend, Progress = Console.WriteLine },
-            new DuoSync.Core.Unity.UnityBridgeClient(folder));
+        var options = new SyncOptions
+        {
+            MeName = me, FriendName = friend, Progress = Console.WriteLine,
+            // Lab remotes are plain folders without an LFS server.
+            PushLfs = Environment.GetEnvironmentVariable("DUOSYNC_NO_LFS") != "1",
+        };
+        if (settings.Integrator && DuoSync.Core.Claude.ClaudeCli.FindExe() is { } claude)
+        {
+            options.CanResolve = true;
+            options.Resolver = new DuoSync.Core.Merge.ClaudeResolver(claude, folder);
+        }
+        var engine = new SyncEngine(repo, options, new DuoSync.Core.Unity.UnityBridgeClient(folder));
 
         OpResult result;
         switch (args[1])
@@ -41,6 +51,17 @@ static class Cli
                 break;
             case "send":
                 result = engine.SendAsync(args.Length > 3 ? args[3] : null).GetAwaiter().GetResult();
+                break;
+            case "merge":
+                // Debug: --cli merge <folder> [answer]: merges the friend's request (or main after a conflict) with Claude.
+                var pending = engine.CheckStatusAsync().GetAwaiter().GetResult().Requests.FirstOrDefault();
+                Console.WriteLine(pending == null ? "no request, merging main" : $"request {pending.Sha[..7]} «{pending.Subject}» from {pending.Author}");
+                var answer = args.Length > 3 ? args[3] : null;
+                result = engine.MergeWithClaudeAsync(pending, q =>
+                {
+                    Console.WriteLine("QUESTION: " + q);
+                    return Task.FromResult(answer);
+                }).GetAwaiter().GetResult();
                 break;
             case "undo":
                 result = engine.UndoReceiveAsync().GetAwaiter().GetResult();

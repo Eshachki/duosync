@@ -12,6 +12,8 @@ public sealed class ProjectEntry
     public string? GitHub { get; set; }
     /// <summary>The friend's GitHub login in this project (for «Черновик»: colours and giving a task).</summary>
     public string? FriendLogin { get; set; }
+    /// <summary>Last merge request of the friend already announced (one notification per request).</summary>
+    public string? NotifiedRequest { get; set; }
 }
 
 /// <summary>%APPDATA%\DuoSync\settings.json. Losing it is harmless: projects are added again, the rest lives in git.</summary>
@@ -22,6 +24,11 @@ public sealed class AppSettings
     public string FriendName { get; set; } = "";
     public int PollSeconds { get; set; } = 60;
     public bool AutoStart { get; set; } = true;
+    /// <summary>
+    /// This computer merges disputes with Claude (Claude Code found here once). Kept, so a temporary sign-out never
+    /// turns the integrator's own conflicts into requests nobody can merge.
+    /// </summary>
+    public bool Integrator { get; set; }
     /// <summary>Where «Создать репозиторий» puts new repositories (organization or login).</summary>
     public string GitHubOwner { get; set; } = "";
     /// <summary>Where downloaded projects go; remembered from the last download.</summary>
