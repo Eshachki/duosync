@@ -20,6 +20,8 @@ public sealed record ProjectStatus(SyncState State)
     public DateTimeOffset? RequestWaitingSince { get; init; }
     /// <summary>At the friend: the integrator merged the request and it is in main.</summary>
     public bool RequestMerged { get; init; }
+    /// <summary>The other side's latest status report (§6а), when it has published one.</summary>
+    public StatusReport? Peer { get; init; }
 }
 
 /// <summary>
@@ -31,12 +33,15 @@ public sealed class StatusChecker
     static readonly string[] UnityRoots = { "Assets/", "Packages/", "ProjectSettings/" };
     readonly Repo _repo;
     readonly bool _integrator;
+    readonly string? _myName;
 
     /// <param name="integrator">This computer merges: look for the friend's merge requests too.</param>
-    public StatusChecker(Repo repo, bool integrator = false)
+    /// <param name="myName">This person: the other side's status report is any other one.</param>
+    public StatusChecker(Repo repo, bool integrator = false, string? myName = null)
     {
         _repo = repo;
         _integrator = integrator;
+        _myName = myName;
     }
 
     public async Task<ProjectStatus> CheckAsync(SemaphoreSlim repoLock, CancellationToken ct = default)
@@ -60,7 +65,14 @@ public sealed class StatusChecker
                 if (!fetch.Ok) return new ProjectStatus(SyncState.Offline) { Error = fetch.StdErr };
             }
             var status = await ComputeAsync(remoteSha);
-            return _integrator ? status with { Requests = await RequestsAsync(ct) } : status;
+            if (!_integrator && _myName == null) return status;
+            // One listing for the service branches: merge requests and status reports.
+            var listing = await _repo.Git.RunAsync(new[] { "ls-remote", _repo.Remote, "refs/heads/duosync/*" },
+                new GitRunOptions { Timeout = TimeSpan.FromSeconds(20), NonInteractive = true }, ct);
+            if (!listing.Ok) return status;
+            var service = GitParse.ParseLsRemote(listing.StdOut);
+            if (_myName != null) status = status with { Peer = await StatusReports.ReadPeerAsync(_repo, _myName, service, ct) };
+            return _integrator ? status with { Requests = await RequestsAsync(service, ct) } : status;
         }
         finally { repoLock.Release(); }
     }
@@ -140,16 +152,14 @@ public sealed class StatusChecker
     /// The integrator's side: the friend's requests (<c>refs/heads/duosync/merge/*</c>) that are neither in main
     /// nor merged here yet. Read only; new request commits are fetched into refs/remotes.
     /// </summary>
-    async Task<IReadOnlyList<MergeRequestInfo>> RequestsAsync(CancellationToken ct)
+    async Task<IReadOnlyList<MergeRequestInfo>> RequestsAsync(IReadOnlyDictionary<string, string> service, CancellationToken ct)
     {
-        var ls = await _repo.Git.RunAsync(new[] { "ls-remote", _repo.Remote, "refs/heads/duosync/merge/*" },
-            new GitRunOptions { Timeout = TimeSpan.FromSeconds(20), NonInteractive = true }, ct);
-        if (!ls.Ok) return Array.Empty<MergeRequestInfo>();
         var main = await _repo.RevParseAsync(_repo.RemoteBranchRef);
         var head = await _repo.HeadAsync();
         var list = new List<MergeRequestInfo>();
-        foreach (var (name, sha) in GitParse.ParseLsRemote(ls.StdOut))
+        foreach (var (name, sha) in service)
         {
+            if (!name.StartsWith("refs/heads/duosync/merge/", StringComparison.Ordinal)) continue;
             var local = $"refs/remotes/{_repo.Remote}/{name["refs/heads/".Length..]}";
             if (await _repo.ReadRefAsync(local) != sha)
             {

@@ -15,12 +15,15 @@ sealed class MainForm : Form
     readonly Label _unsent = new() { AutoSize = true };
     /// <summary>A merge request: the friend's one waiting here (integrator) or own one waiting there.</summary>
     readonly Label _request = new() { AutoSize = true, ForeColor = Color.FromArgb(170, 90, 0) };
+    /// <summary>The other side's latest status report (§6а); a click shows it whole.</summary>
+    readonly LinkLabel _peer = new() { AutoSize = true, LinkBehavior = LinkBehavior.HoverUnderline, Visible = false };
     readonly Button _merge = new() { Text = "Слить с Claude", AutoSize = true, Height = 36, Visible = false, Font = new Font("Segoe UI", 10f, FontStyle.Bold) };
     readonly Button _receive = new() { Text = "Получить", Width = 150, Height = 36 };
     readonly Button _send = new() { Text = "Отправить", Width = 150, Height = 36 };
     readonly Button _undo = new() { Text = "Откатить получение", AutoSize = true, Height = 36 };
     readonly Button _check = new() { Text = "Проверить сейчас", AutoSize = true, Height = 36 };
     readonly Button _todo = new() { Text = "Черновик", AutoSize = true, Height = 36 };
+    readonly Button _report = new() { Text = "Отправить отчёт", AutoSize = true, Height = 36 };
     readonly Button _prepare = new() { Text = "Подготовить проект", AutoSize = true, Height = 36, Visible = false };
     readonly TextBox _message = new() { PlaceholderText = "Что сделал — можно не писать, программа подпишет сама по файлам", Dock = DockStyle.Fill };
     readonly ListBox _feed = new() { Dock = DockStyle.Fill, IntegralHeight = false, HorizontalScrollbar = true };
@@ -40,7 +43,7 @@ sealed class MainForm : Form
         top.Controls.AddRange(new Control[] { new Label { Text = "Проект:", AutoSize = true, Padding = new Padding(0, 6, 0, 0) }, _projects, _add });
 
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
-        buttons.Controls.AddRange(new Control[] { _prepare, _merge, _receive, _send, _undo, _check, _todo });
+        buttons.Controls.AddRange(new Control[] { _prepare, _merge, _receive, _send, _undo, _check, _todo, _report });
 
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, Padding = new Padding(12) };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -49,12 +52,13 @@ sealed class MainForm : Form
         layout.Controls.Add(_incoming);
         layout.Controls.Add(_unsent);
         layout.Controls.Add(_request);
+        layout.Controls.Add(_peer);
         layout.Controls.Add(buttons);
         layout.Controls.Add(_message);
         layout.Controls.Add(_result);
         layout.Controls.Add(new Label { Text = "Лента проекта", AutoSize = true, ForeColor = Color.DimGray });
         layout.Controls.Add(_feed);
-        for (int i = 0; i < 9; i++) layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        for (int i = 0; i < 10; i++) layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         Controls.Add(layout);
 
@@ -86,6 +90,12 @@ sealed class MainForm : Form
             await RunAsync(e => e.MergeWithClaudeAsync(request, question => Task.FromResult(AskDialog.Ask(this, question))));
         };
         _todo.Click += (_, _) => { if (Current is { } c) _app.ShowTodo(c); };
+        _report.Click += async (_, _) => await SendReportAsync();
+        _peer.LinkClicked += (_, _) =>
+        {
+            if (Current?.Status?.Peer is { } peer)
+                ReportDialog.Show(this, $"Отчёт программы: {peer.Name}", "Это состояние программы на другом компьютере, как она его прислала. Файлов проекта в отчёте нет.", peer.ToText());
+        };
         Resize += (_, _) => FitLabels();
         FitLabels();
         FormClosing += (_, e) =>
@@ -139,7 +149,7 @@ sealed class MainForm : Form
     void FitLabels()
     {
         var width = Math.Max(300, ClientSize.Width - 40);
-        _incoming.MaximumSize = _unsent.MaximumSize = _request.MaximumSize = _result.MaximumSize = new Size(width, 0);
+        _incoming.MaximumSize = _unsent.MaximumSize = _request.MaximumSize = _peer.MaximumSize = _result.MaximumSize = new Size(width, 0);
     }
 
     async Task PrepareAsync()
@@ -154,6 +164,23 @@ sealed class MainForm : Form
                    (plan.Warnings.Count > 0 ? nl + nl + "Проверь в Unity:" + nl + string.Join(nl, plan.Warnings.Select(w => "• " + w)) : "");
         if (MessageBox.Show(this, text, "Подготовить проект", MessageBoxButtons.OKCancel, MessageBoxIcon.Information) != DialogResult.OK) return;
         await RunAsync(_ => setup.ApplyAsync());
+    }
+
+    /// <summary>«Отправить отчёт»: the person sees everything that goes out, then it goes to their own status branch.</summary>
+    async Task SendReportAsync()
+    {
+        var c = Current;
+        if (c == null) return;
+        _report.Enabled = false;
+        try
+        {
+            var report = await c.BuildReportAsync();
+            if (!ReportDialog.Show(this, "Отправить отчёт", $"Это увидит {_app.Friend}. Отчёт уходит на GitHub в служебную ветку и заменяет прошлый. " +
+                    "Файлов проекта в нём нет, адреса почты, токены и имя пользователя Windows вычищены.", report.ToText(), "Отправить")) return;
+            var r = await c.PublishReportAsync(interactive: true, report);
+            ShowNote(r is { Ok: true } ? $"Отчёт отправлен, {_app.Friend} увидит его в окне программы." : "Отчёт не ушёл: нет связи с GitHub. Работа при этом не затронута.", r is not { Ok: true });
+        }
+        finally { _report.Enabled = true; }
     }
 
     ProjectController? Current => _projects.SelectedItem is ProjectItem item ? item.Controller : null;
@@ -218,7 +245,7 @@ sealed class MainForm : Form
         _prepare.Visible = notPrepared;
         _receive.Enabled = _send.Enabled = _undo.Enabled = enabled && !notPrepared;
         _check.Enabled = _prepare.Enabled = enabled;
-        _todo.Enabled = c != null;
+        _todo.Enabled = _report.Enabled = c != null;
         _todo.Text = c?.TodoOpen is > 0 ? $"Черновик ({c.TodoOpen})" : "Черновик";
         if (c == null)
         {
@@ -226,7 +253,7 @@ sealed class MainForm : Form
                 ? "Проектов на этом компьютере пока нет. Скачай проект кнопкой выше."
                 : "Проектов пока нет. Нажми «Добавить проект…».";
             _unsent.Text = _request.Text = "";
-            _merge.Visible = false;
+            _merge.Visible = _peer.Visible = false;
             return;
         }
         var st = c.Status;
@@ -239,6 +266,15 @@ sealed class MainForm : Form
                 ? $"Твоя работа ждёт слияния с {since.ToLocalTime():dd.MM HH:mm}, сольёт {_app.Friend}. Работать можно дальше, лучше в других файлах."
                 : "";
         var friend = _app.Friend;
+        _peer.Visible = st?.Peer != null;
+        if (st?.Peer is { } peer)
+        {
+            var what = peer.LastOp is { } op ? op.Message : "работает без ошибок";
+            if (what.Length > 160) what = what[..157] + "…";
+            _peer.Text = $"{peer.Name}: {what} (отчёт от {peer.Utc.ToLocalTime():dd.MM HH:mm}) — подробнее";
+            _peer.LinkArea = new LinkArea(_peer.Text.Length - "подробнее".Length, "подробнее".Length);
+            _peer.ForeColor = peer.HasProblem ? Color.FromArgb(170, 30, 30) : Color.DimGray;
+        }
         _incoming.ForeColor = Icons.ColorOf(st?.State ?? SyncState.Busy);
         _incoming.Text = c.Busy ? "Идёт операция… " + (c.Progress ?? "") : st?.State switch
         {

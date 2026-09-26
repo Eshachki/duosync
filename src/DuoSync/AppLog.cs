@@ -25,6 +25,25 @@ static class AppLog
         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
     }
 
+    /// <summary>The last lines of today's log (and of yesterday's when today's is short): for the status report.</summary>
+    public static IReadOnlyList<string> Tail(int lines)
+    {
+        try
+        {
+            lock (Gate)
+            {
+                var result = new List<string>();
+                foreach (var day in new[] { DateTime.Now.AddDays(-1), DateTime.Now })
+                {
+                    var file = Path.Combine(Dir, $"{day:yyyy-MM-dd}.log");
+                    if (File.Exists(file)) result.AddRange(File.ReadLines(file).Select(l => $"{day:dd.MM} {l}"));
+                }
+                return result.TakeLast(lines).ToList();
+            }
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return Array.Empty<string>(); }
+    }
+
     public static void Error(string what, Exception e) => Write($"{what}: {e.GetType().Name}: {e.Message}");
 
     /// <summary>Start line, old logs away, and every exception nobody caught ends up here.</summary>

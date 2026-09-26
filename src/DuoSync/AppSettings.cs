@@ -24,6 +24,8 @@ public sealed class AppSettings
     public string FriendName { get; set; } = "";
     public int PollSeconds { get; set; } = 60;
     public bool AutoStart { get; set; } = true;
+    /// <summary>After an operation that did not succeed, the status report goes to GitHub for the other side (§6а).</summary>
+    public bool ShareStatus { get; set; } = true;
     /// <summary>
     /// This computer merges disputes with Claude (Claude Code found here once). Kept, so a temporary sign-out never
     /// turns the integrator's own conflicts into requests nobody can merge.

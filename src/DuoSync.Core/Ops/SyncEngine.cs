@@ -70,7 +70,18 @@ public sealed class SyncEngine
     SemaphoreSlim RepoLock => RepoLocks.GetOrAdd(Path.GetFullPath(_repo.Root), _ => new SemaphoreSlim(1, 1));
 
     /// <summary>Background status for the tray and notifications; skipped (Busy) while an operation runs.</summary>
-    public Task<ProjectStatus> CheckStatusAsync(CancellationToken ct = default) => new StatusChecker(_repo, _opt.CanResolve).CheckAsync(RepoLock, ct);
+    public Task<ProjectStatus> CheckStatusAsync(CancellationToken ct = default) => new StatusChecker(_repo, _opt.CanResolve, _opt.MeName).CheckAsync(RepoLock, ct);
+
+    /// <summary>
+    /// Publishes this computer's status report to its own status branch (§6а). Called after the person's own
+    /// operations and by their button; waits for a running operation.
+    /// </summary>
+    public async Task<GitResult> PublishStatusAsync(StatusReport report, bool interactive, CancellationToken ct = default)
+    {
+        await RepoLock.WaitAsync(ct);
+        try { return await StatusReports.PublishAsync(_repo, report, interactive, ct); }
+        finally { RepoLock.Release(); }
+    }
 
     async Task<OpResult> Locked(Func<Task<OpResult>> body, CancellationToken ct)
     {

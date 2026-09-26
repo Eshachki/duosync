@@ -368,6 +368,13 @@ sealed class TrayContext : ApplicationContext
             await PollAsync();
         });
         menu.Items.Add("Имена…", null, (_, _) => EditNames());
+        var share = new ToolStripMenuItem("Отправлять отчёт при сбоях") { Checked = Settings.ShareStatus, CheckOnClick = true };
+        share.CheckedChanged += (_, _) =>
+        {
+            Settings.ShareStatus = share.Checked;
+            Settings.Save();
+        };
+        menu.Items.Add(share);
         if (UpdateGuard.Enabled)
         {
             if (_ready is { } ready)
