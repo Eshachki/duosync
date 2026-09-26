@@ -17,6 +17,7 @@ sealed class MainForm : Form
     readonly Button _send = new() { Text = "Отправить", Width = 150, Height = 36 };
     readonly Button _undo = new() { Text = "Откатить получение", AutoSize = true, Height = 36 };
     readonly Button _check = new() { Text = "Проверить сейчас", AutoSize = true, Height = 36 };
+    readonly Button _todo = new() { Text = "Черновик", AutoSize = true, Height = 36 };
     readonly Button _prepare = new() { Text = "Подготовить проект", AutoSize = true, Height = 36, Visible = false };
     readonly TextBox _message = new() { PlaceholderText = "Что сделал — можно не писать, программа подпишет сама по файлам", Dock = DockStyle.Fill };
     readonly ListBox _feed = new() { Dock = DockStyle.Fill, IntegralHeight = false, HorizontalScrollbar = true };
@@ -36,7 +37,7 @@ sealed class MainForm : Form
         top.Controls.AddRange(new Control[] { new Label { Text = "Проект:", AutoSize = true, Padding = new Padding(0, 6, 0, 0) }, _projects, _add });
 
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
-        buttons.Controls.AddRange(new Control[] { _prepare, _receive, _send, _undo, _check });
+        buttons.Controls.AddRange(new Control[] { _prepare, _receive, _send, _undo, _check, _todo });
 
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, Padding = new Padding(12) };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -72,6 +73,7 @@ sealed class MainForm : Form
         };
         _check.Click += async (_, _) => { if (Current != null) await Current.RefreshAsync(); };
         _prepare.Click += async (_, _) => await PrepareAsync();
+        _todo.Click += (_, _) => { if (Current is { } c) _app.ShowTodo(c); };
         Resize += (_, _) => FitLabels();
         FitLabels();
         FormClosing += (_, e) =>
@@ -201,6 +203,8 @@ sealed class MainForm : Form
         _prepare.Visible = notPrepared;
         _receive.Enabled = _send.Enabled = _undo.Enabled = enabled && !notPrepared;
         _check.Enabled = _prepare.Enabled = enabled;
+        _todo.Enabled = c != null;
+        _todo.Text = c?.TodoOpen is > 0 ? $"Черновик ({c.TodoOpen})" : "Черновик";
         if (c == null)
         {
             _incoming.Text = _app.Available.Count > 0

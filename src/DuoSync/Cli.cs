@@ -15,6 +15,7 @@ static class Cli
         Console.OutputEncoding = System.Text.Encoding.UTF8;
         if (args.Length == 2 && args[1] == "projects") return Projects();
         if (args.Length == 2 && args[1] == "update") return Update();
+        if (args.Length >= 4 && args[1] == "todo") return Todo(args[2], args[3], args.Skip(4).ToArray());
         if (args.Length < 3)
         {
             Console.Error.WriteLine("usage: --cli prepare|receive|send|undo|status|unity <folder> [message] | --cli projects | --cli update");
@@ -69,6 +70,42 @@ static class Cli
         if (!string.IsNullOrWhiteSpace(result.Detail)) Console.WriteLine("detail: " + result.Detail.Trim());
         if (result.ConflictedPaths.Count > 0) Console.WriteLine("conflicts: " + string.Join(", ", result.ConflictedPaths));
         return result.Succeeded ? 0 : 1;
+    }
+
+    /// <summary>Debug: «Черновик» of a repository: list | add &lt;text&gt; | todo|doing|done|delete &lt;number&gt;.</summary>
+    static int Todo(string repo, string action, string[] rest)
+    {
+        var github = DuoSync.Core.GitHub.GitHubClient.ConnectAsync(interactive: false).GetAwaiter().GetResult();
+        if (github == null) { Console.WriteLine("no stored GitHub login"); return 1; }
+        try
+        {
+            if (action == "add")
+            {
+                var added = github.AddTodoAsync(repo, string.Join(' ', rest)).GetAwaiter().GetResult();
+                Console.WriteLine($"added #{added.Number}");
+            }
+            else if (action != "list")
+            {
+                var number = int.Parse(rest[0]);
+                var page = github.OpenTodosAsync(repo, null).GetAwaiter().GetResult()!.Items
+                    .Concat(github.ClosedTodosAsync(repo, null).GetAwaiter().GetResult()!.Items);
+                var item = page.First(t => t.Number == number);
+                if (action == "delete") github.UpdateTodoAsync(repo, item, delete: true).GetAwaiter().GetResult();
+                else github.UpdateTodoAsync(repo, item, status: action switch
+                {
+                    "todo" => DuoSync.Core.GitHub.TodoStatus.Todo,
+                    "doing" => DuoSync.Core.GitHub.TodoStatus.Doing,
+                    _ => DuoSync.Core.GitHub.TodoStatus.Done,
+                }).GetAwaiter().GetResult();
+            }
+            var open = github.OpenTodosAsync(repo, null).GetAwaiter().GetResult()!;
+            var closed = github.ClosedTodosAsync(repo, null).GetAwaiter().GetResult()!;
+            foreach (var t in open.Items.Concat(closed.Items)) Console.WriteLine($"#{t.Number} [{t.Status}] {t.Title} ({t.Author})");
+            var again = github.OpenTodosAsync(repo, open.ETag).GetAwaiter().GetResult();
+            Console.WriteLine($"etag {open.ETag} -> repeat request: {(again == null ? "304 not modified" : "changed")}");
+            return 0;
+        }
+        catch (DuoSync.Core.GitHub.GitHubException e) { Console.WriteLine($"{e.Kind}: {e.Message}"); return 1; }
     }
 
     /// <summary>Debug: what the updater sees (does not download or install).</summary>

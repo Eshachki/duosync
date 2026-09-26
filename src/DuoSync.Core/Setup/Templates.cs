@@ -55,7 +55,11 @@ public static class Templates
     {
         BlockStart,
         "/[Ll]ibrary/", "/[Tt]emp/", "/[Oo]bj/", "/[Bb]uild/", "/[Bb]uilds/", "/[Ll]ogs/", "/[Uu]ser[Ss]ettings/",
-        "/[Mm]emoryCaptures/", "/[Rr]ecordings/", "/BuildReports/", "/ProfilerCaptures/", "/TRASH/",
+        "/[Mm]emoryCaptures/", "/[Rr]ecordings/", "/[Bb]uild[Rr]eports/", "/[Pp]rofiler[Cc]aptures/",
+        // The people's own conventions: a dump for whole purchased packs (with its .meta, or Unity recreates it
+        // and it travels alone), working dumps and web exports.
+        "/[Aa]ssets/IGNORE_FOLDER/", "/[Aa]ssets/IGNORE_FOLDER.meta", "/TRASH/", "/web/",
+        "*.apk", "*.aab", "*.app", "*.unitypackage", "*.unitypackage.meta",
         "*.csproj", "*.sln", "*.slnx", ".vs/", ".idea/", ".env",
         "/Assets/_Recovery/", "/Assets/_Recovery.meta", "/Assets/_Local/", "/Assets/_Local.meta",
         "/.duosync/", "/.mcp.json", "/opencode.json", "/.opencode/", "/.cline/", "/.claude/settings.local.json",
@@ -63,6 +67,62 @@ public static class Templates
         "*.orig", "*.BACKUP.*", "*.BASE.*", "*.LOCAL.*", "*.REMOTE.*", "sysinfo.txt", "mono_crash.*",
         BlockEnd,
     }) + "\n";
+
+    /// <summary>
+    /// Whole .gitignore for a project that has none: the github/gitignore Unity template with the people's additions.
+    /// A project that already has its own file keeps it; only the DuoSync block is added to it.
+    /// </summary>
+    public const string BaseGitIgnore = @"# Unity (по шаблону github/gitignore)
+.utmp/
+*.log
+*.blend1
+*.blend1.meta
+/[Aa]ssets/AssetStoreTools*
+/[Aa]ssets/Plugins/Editor/JetBrains*
+*.DotSettings.user
+.gradle/
+ExportedObj/
+.consulo/
+*.unityproj
+*.suo
+*.tmp
+*.user
+*.userprefs
+*.pidb
+*.booproj
+*.svd
+*.pdb
+*.mdb
+*.opendb
+*.VC.db
+*.pidb.meta
+*.pdb.meta
+*.mdb.meta
+
+# Правила выше писались про мусор в корне. Внутри Assets .meta, .obj и файлы плагинов (.dll, .pdb, .mdb)
+# законные: ассет без своего .meta получит у друга новый GUID, и ссылки на него тихо порвутся.
+!/[Aa]ssets/**/*.meta
+!/[Aa]ssets/**/*.obj
+!/[Aa]ssets/**/*.dll
+!/[Aa]ssets/**/*.pdb
+!/[Aa]ssets/**/*.mdb
+
+crashlytics-build.properties
+/[Aa]ssets/[Ii]nit[Tt]est[Ss]cene*.unity*
+/ServerData
+/[Aa]ssets/StreamingAssets/aa*
+/[Aa]ssets/AddressableAssetsData/link.xml*
+/[Aa]ssets/Addressables_Temp*
+/[Aa]ssets/AddressableAssetsData/*/*.bin*
+/[Aa]ssets/Unity.VisualScripting.Generated/VisualScripting.Flow/UnitOptions.db
+/[Aa]ssets/Unity.VisualScripting.Generated/VisualScripting.Flow/UnitOptions.db.meta
+/[Aa]ssets/Unity.VisualScripting.Generated/VisualScripting.Core/Property Providers
+/[Aa]ssets/Unity.VisualScripting.Generated/VisualScripting.Core/Property Providers.meta
+
+# Покупные паки, которые импортируются целиком ради пары вещей, в истории не держим:
+# /[Aa]ssets/ИмяПака/
+# /[Aa]ssets/ИмяПака.meta
+";
 
     /// <summary>.git/info/attributes (local, highest priority): plain-text merge for Unity YAML, binary merge for LFS.</summary>
     public static string InfoAttributesBlock(IEnumerable<string> binaryAssetPaths)

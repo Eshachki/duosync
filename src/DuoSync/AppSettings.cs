@@ -10,6 +10,8 @@ public sealed class ProjectEntry
     public string? NotifiedSha { get; set; }
     /// <summary>"owner/name" on GitHub, filled from the origin URL.</summary>
     public string? GitHub { get; set; }
+    /// <summary>The friend's GitHub login in this project (for «Черновик»: colours and giving a task).</summary>
+    public string? FriendLogin { get; set; }
 }
 
 /// <summary>%APPDATA%\DuoSync\settings.json. Losing it is harmless: projects are added again, the rest lives in git.</summary>

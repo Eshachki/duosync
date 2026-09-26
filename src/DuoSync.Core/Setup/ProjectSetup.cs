@@ -138,8 +138,9 @@ public sealed class ProjectSetup
 
         var attrs = DisableForeign(UpsertBlock(ReadOrNull(".gitattributes"), Templates.GitAttributesBlock(binaryAssets)));
         files.Add(new DesiredFile(".gitattributes", attrs, "концы строк LF, картинки/модели/звук в LFS, без чужих merge-драйверов"));
-        files.Add(new DesiredFile(".gitignore", UpsertBlock(ReadOrNull(".gitignore"), Templates.GitIgnoreBlock()),
-            "не отправлять Library, Temp, сборки, локальные настройки MCP и нейросетей"));
+        var ignore = ReadOrNull(".gitignore");
+        files.Add(new DesiredFile(".gitignore", UpsertBlock(string.IsNullOrEmpty(ignore) ? Templates.BaseGitIgnore : ignore, Templates.GitIgnoreBlock()),
+            "не отправлять Library, Temp, сборки, IGNORE_FOLDER, TRASH, web, локальные настройки MCP и нейросетей"));
         files.Add(new DesiredFile("AGENTS.md", UpsertMd(ReadOrNull("AGENTS.md"), Templates.AgentsSection(_me, _friend)),
             "правила для нейросетей: ассеты только через Unity, git не трогать"));
         files.Add(new DesiredFile("CLAUDE.md", UpsertMd(ReadOrNull("CLAUDE.md"), Templates.ClaudeSection), "Claude Code читает AGENTS.md"));

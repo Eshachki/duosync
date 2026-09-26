@@ -14,7 +14,7 @@ public sealed record RemoteProject(string FullName, string Name, DateTimeOffset 
     public string CloneUrl => $"https://github.com/{FullName}.git";
 }
 
-public enum GitHubError { Unauthorized, Forbidden, NotFound, AlreadyExists, Network, Other }
+public enum GitHubError { Unauthorized, Forbidden, NotFound, Gone, AlreadyExists, Network, Other }
 
 public sealed class GitHubException : Exception
 {
@@ -27,7 +27,7 @@ public sealed class GitHubException : Exception
 /// so there is no separate login. Finds DuoSync projects (topic <c>duosync-project</c>) and creates repositories for new ones.
 /// The token lives only in memory and goes only to api.github.com.
 /// </summary>
-public sealed class GitHubClient
+public sealed partial class GitHubClient
 {
     /// <summary>Not plain "duosync": that one may describe the program itself, this one marks a synchronized project.</summary>
     public const string ProjectTopic = "duosync-project";
@@ -190,7 +190,7 @@ public sealed class GitHubClient
             name,
             @private = true,
             description = "Unity-проект (DuoSync)",
-            has_issues = false,
+            has_issues = true, // «Черновик» keeps its tasks in Issues
             has_projects = false,
             has_wiki = false,
             auto_init = false,
@@ -257,35 +257,47 @@ public sealed class GitHubClient
 
     // ------------------------------------------------------------------ HTTP
 
-    async Task<JsonDocument> SendAsync(HttpMethod method, string path, object? body, CancellationToken ct)
+    HttpRequestMessage NewRequest(HttpMethod method, string path, object? body)
     {
-        using var request = new HttpRequestMessage(method, path);
+        var request = new HttpRequestMessage(method, path);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _token);
         request.Headers.UserAgent.ParseAdd("DuoSync");
         request.Headers.Accept.ParseAdd("application/vnd.github+json");
         request.Headers.Add("X-GitHub-Api-Version", "2022-11-28");
         if (body != null) request.Content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json");
+        return request;
+    }
 
-        HttpResponseMessage response;
-        try { response = await Http.SendAsync(request, ct); }
+    static async Task<HttpResponseMessage> SendRawAsync(HttpRequestMessage request, CancellationToken ct)
+    {
+        try { return await Http.SendAsync(request, ct); }
         catch (HttpRequestException e) { throw new GitHubException(GitHubError.Network, "Нет связи с GitHub.", e); }
         catch (TaskCanceledException e) when (!ct.IsCancellationRequested) { throw new GitHubException(GitHubError.Network, "GitHub не ответил вовремя.", e); }
+    }
 
-        using (response)
+    async Task<JsonDocument> SendAsync(HttpMethod method, string path, object? body, CancellationToken ct)
+    {
+        using var request = NewRequest(method, path, body);
+        using var response = await SendRawAsync(request, ct);
+        var text = await response.Content.ReadAsStringAsync(ct);
+        if (response.IsSuccessStatusCode) return JsonDocument.Parse(text.Length == 0 ? "null" : text);
+        throw Error(response.StatusCode, text);
+    }
+
+    static GitHubException Error(HttpStatusCode status, string body)
+    {
+        var message = ErrorMessage(body);
+        return status switch
         {
-            var text = await response.Content.ReadAsStringAsync(ct);
-            if (response.IsSuccessStatusCode) return JsonDocument.Parse(text.Length == 0 ? "null" : text);
-            var message = ErrorMessage(text);
-            throw response.StatusCode switch
-            {
-                HttpStatusCode.Unauthorized => new GitHubException(GitHubError.Unauthorized, "GitHub не принял вход."),
-                HttpStatusCode.Forbidden => new GitHubException(GitHubError.Forbidden, "GitHub не разрешает это действие: " + message),
-                HttpStatusCode.NotFound => new GitHubException(GitHubError.NotFound, "На GitHub не найдено: " + message),
-                HttpStatusCode.UnprocessableEntity when message.Contains("already exists", StringComparison.OrdinalIgnoreCase)
-                    => new GitHubException(GitHubError.AlreadyExists, "Такой репозиторий на GitHub уже есть."),
-                _ => new GitHubException(GitHubError.Other, $"GitHub ответил {(int)response.StatusCode}: {message}"),
-            };
-        }
+            HttpStatusCode.Unauthorized => new GitHubException(GitHubError.Unauthorized, "GitHub не принял вход."),
+            HttpStatusCode.Forbidden => new GitHubException(GitHubError.Forbidden, "GitHub не разрешает это действие: " + message),
+            HttpStatusCode.NotFound => new GitHubException(GitHubError.NotFound, "На GitHub не найдено: " + message),
+            HttpStatusCode.Gone => new GitHubException(GitHubError.Gone, "На GitHub это выключено: " + message),
+            HttpStatusCode.UnprocessableEntity when body.Contains("already exists", StringComparison.OrdinalIgnoreCase)
+                                                 || body.Contains("already_exists", StringComparison.Ordinal)
+                => new GitHubException(GitHubError.AlreadyExists, "Такое на GitHub уже есть: " + message),
+            _ => new GitHubException(GitHubError.Other, $"GitHub ответил {(int)status}: {message}"),
+        };
     }
 
     /// <summary>"message" plus the per-field "errors[].message" GitHub returns (422 keeps the useful part there).</summary>

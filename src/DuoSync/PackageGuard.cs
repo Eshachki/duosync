@@ -34,8 +34,8 @@ static class PackageGuard
     /// </summary>
     public static bool HandOffIfPackaged()
     {
+        // No log line here: inside the package it would land in the package's private copy too.
         if (HostPackageFamily() is not { } family || Environment.ProcessPath is not { } exe) return false;
-        AppLog.Write($"started inside package {family}, handing over to Explorer");
         // An exe that exists only in the package's private AppData copy is invisible to Explorer.
         var local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
         var privateCopy = exe.StartsWith(local + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)

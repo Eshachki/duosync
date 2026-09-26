@@ -31,6 +31,7 @@ sealed class TrayContext : ApplicationContext
     GitHubClient? _github;
     /// <summary>What a click on the current balloon does.</summary>
     Action _balloonClick;
+    readonly Dictionary<ProjectController, TodoForm> _todoForms = new();
     DateTime _nextUpdateCheck = DateTime.UtcNow.AddMinutes(2);
     Task? _updateCheck;
     (ReleaseInfo Release, string Exe)? _ready;
@@ -77,15 +78,22 @@ sealed class TrayContext : ApplicationContext
     /// <summary>The friend in messages, always in the nominative («{имя} отправил», «прислал {имя}»).</summary>
     public string Friend => Settings.FriendDisplay;
 
-    /// <summary>Debug aid: poll once, render the window to PNG and quit.</summary>
+    /// <summary>Debug aid: poll once, render the window to PNG and quit. A path ending in "-todo.png" renders «Черновик» of the first project.</summary>
     async Task SnapshotAndExitAsync(string path)
     {
         await PollAsync();
         await Task.Delay(800);
-        if (_form != null)
+        Form? target = _form;
+        if (path.EndsWith("-todo.png", StringComparison.OrdinalIgnoreCase) && Controllers.Count > 0)
         {
-            using var bmp = new Bitmap(_form.Width, _form.Height);
-            _form.DrawToBitmap(bmp, new Rectangle(0, 0, bmp.Width, bmp.Height));
+            ShowTodo(Controllers[0]);
+            await Task.Delay(5000);
+            target = _todoForms.GetValueOrDefault(Controllers[0]);
+        }
+        if (target != null)
+        {
+            using var bmp = new Bitmap(target.Width, target.Height);
+            target.DrawToBitmap(bmp, new Rectangle(0, 0, bmp.Width, bmp.Height));
             bmp.Save(path, System.Drawing.Imaging.ImageFormat.Png);
         }
         ExitThread();
@@ -171,7 +179,57 @@ sealed class TrayContext : ApplicationContext
             _nextDiscovery = DateTime.UtcNow + DiscoveryInterval;
             await DiscoverAsync();
         }
+        await CountTodosAsync();
         MaybeUpdate();
+    }
+
+    // ------------------------------------------------------------------ Черновик
+
+    /// <summary>The GitHub client on the login git already has. Interactive: git may show its sign-in window (button presses only).</summary>
+    public async Task<GitHubClient?> GitHubAsync(bool interactive = false) => _github ??= await GitHubClient.ConnectAsync(interactive);
+
+    /// <summary>"owner/name" of the project on GitHub, remembered once found.</summary>
+    public async Task<string?> RepositoryOfAsync(ProjectController c)
+    {
+        if (c.Entry.GitHub == null && await RemoteRepositoryAsync(c.Engine.Repo.Git) is { } name)
+        {
+            c.Entry.GitHub = name;
+            Settings.Save();
+        }
+        return c.Entry.GitHub;
+    }
+
+    public void ShowTodo(ProjectController c)
+    {
+        if (!_todoForms.TryGetValue(c, out var form) || form.IsDisposed)
+        {
+            form = new TodoForm(this, c);
+            form.FormClosed += (_, _) => _todoForms.Remove(c);
+            _todoForms[c] = form;
+        }
+        form.Show();
+        if (form.WindowState == FormWindowState.Minimized) form.WindowState = FormWindowState.Normal;
+        form.Activate();
+    }
+
+    /// <summary>Number of unfinished tasks for the «Черновик» buttons: once a minute, a cheap conditional request.</summary>
+    async Task CountTodosAsync()
+    {
+        if (_github == null) return;
+        foreach (var c in Controllers.ToList())
+        {
+            if (_todoForms.ContainsKey(c)) continue; // an open window counts itself every 3 s
+            if (await RepositoryOfAsync(c) is not { } repo) continue;
+            try
+            {
+                if (await _github.OpenTodosAsync(repo, c.TodoETag) is { } page)
+                {
+                    c.TodoETag = page.ETag;
+                    c.SetTodoOpen(page.Items.Count);
+                }
+            }
+            catch (GitHubException) { } // offline or Issues switched off: the window explains when opened
+        }
     }
 
     void MaybeNotify(ProjectController c)

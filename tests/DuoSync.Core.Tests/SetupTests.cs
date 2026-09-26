@@ -16,7 +16,7 @@ public class SetupTests : IDisposable
     }
 
     /// <summary>A project that was cloned with core.autocrlf=true and has no DuoSync attributes yet.</summary>
-    async Task<Repo> UnpreparedCloneAsync(string gitattributes = "")
+    async Task<Repo> UnpreparedCloneAsync(string gitattributes = "", string gitignore = "")
     {
         Directory.CreateDirectory(_root);
         var raw = new GitRunner(_root, "Seed", "s@example.invalid");
@@ -29,6 +29,7 @@ public class SetupTests : IDisposable
         File.WriteAllText(Path.Combine(seed, "Assets", "A.cs"), "class A\n{\n}\n");
         File.WriteAllText(Path.Combine(seed, "Assets", "B.unity"), "%YAML 1.1\n--- !u!1 &1\n");
         if (gitattributes.Length > 0) File.WriteAllText(Path.Combine(seed, ".gitattributes"), gitattributes);
+        if (gitignore.Length > 0) File.WriteAllText(Path.Combine(seed, ".gitignore"), gitignore);
         await s.RunCheckedAsync("add", "-A");
         await s.RunCheckedAsync("commit", "-q", "-m", "seed");
         await s.RunCheckedAsync("push", "-q", "origin", "main");
@@ -61,6 +62,46 @@ public class SetupTests : IDisposable
         var changed = await repo.DiffNamesAsync("HEAD~1", "HEAD");
         Assert.DoesNotContain("Assets/A.cs", changed);
         Assert.Equal(OpStatus.UpToDate, (await setup.ApplyAsync()).Status);
+    }
+
+    [Fact]
+    public async Task Project_without_gitignore_gets_the_full_template_with_the_peoples_rules()
+    {
+        var repo = await UnpreparedCloneAsync();
+
+        await new ProjectSetup(repo, "Аня", "Боря").ApplyAsync();
+
+        var text = File.ReadAllText(Path.Combine(repo.Root, ".gitignore")).Replace("\r\n", "\n");
+        Assert.StartsWith("# Unity", text);
+        Assert.Contains(Templates.BlockStart, text);
+        foreach (var ignored in new[] { "Assets/IGNORE_FOLDER/Pack/Rock.fbx", "Assets/IGNORE_FOLDER.meta", "TRASH/old.png", "web/index.html",
+                                        "Game.apk", "Library/x.asset", "Assets/_Local/Test.cs" })
+            Assert.True(await IgnoredAsync(repo, ignored), ignored);
+        foreach (var kept in new[] { "Assets/Plugins/DOTween.dll", "Assets/Plugins/DOTween.dll.mdb", "Assets/Plugins/DOTween.dll.meta",
+                                     "Assets/Models/Door.obj", "Assets/Scripts/A.cs.meta" })
+            Assert.False(await IgnoredAsync(repo, kept), kept);
+    }
+
+    [Fact]
+    public async Task Own_gitignore_is_kept_and_gets_the_block()
+    {
+        var repo = await UnpreparedCloneAsync(gitignore: "/MyStuff/\n");
+
+        await new ProjectSetup(repo, "Аня", "Боря").ApplyAsync();
+
+        var text = File.ReadAllText(Path.Combine(repo.Root, ".gitignore")).Replace("\r\n", "\n");
+        Assert.StartsWith("/MyStuff/\n", text);
+        Assert.DoesNotContain("# Unity (по шаблону", text);
+        Assert.True(await IgnoredAsync(repo, "Assets/IGNORE_FOLDER/Pack/Rock.fbx"));
+        Assert.True(await IgnoredAsync(repo, "MyStuff/notes.txt"));
+    }
+
+    static async Task<bool> IgnoredAsync(Repo repo, string path)
+    {
+        // check-ignore refuses literal pathspecs, which GitRunner turns on for everything else.
+        var r = await repo.Git.RunAsync(new[] { "check-ignore", "-q", "--no-index", "--", path },
+            new GitRunOptions { Env = new Dictionary<string, string> { ["GIT_LITERAL_PATHSPECS"] = "0" } });
+        return r.ExitCode switch { 0 => true, 1 => false, _ => throw new GitException(r) };
     }
 
     [Fact]

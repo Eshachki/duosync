@@ -15,6 +15,10 @@ sealed class ProjectController
     public OpResult? LastResult { get; private set; }
     /// <summary>Line shown while an operation waits (e.g. repeating after a dropped connection).</summary>
     public string? Progress { get; private set; }
+    /// <summary>Unfinished tasks in «Черновик», when known; the button shows the number.</summary>
+    public int? TodoOpen { get; private set; }
+    /// <summary>ETag of the last background count of «Черновик»: an unchanged list costs nothing to ask again.</summary>
+    public string? TodoETag { get; set; }
     public event Action? Changed;
 
     public ProjectController(ProjectEntry entry, AppSettings settings)
@@ -28,6 +32,13 @@ sealed class ProjectController
             Progress = line => { Progress = line; Changed?.Invoke(); },
         };
         Engine = new SyncEngine(new Repo(git), Options, new DuoSync.Core.Unity.UnityBridgeClient(entry.Path));
+    }
+
+    public void SetTodoOpen(int count)
+    {
+        if (TodoOpen == count) return;
+        TodoOpen = count;
+        Changed?.Invoke();
     }
 
     public async Task RefreshAsync()
