@@ -43,6 +43,36 @@ public class SetupTests : IDisposable
     }
 
     [Fact]
+    public async Task Library_and_builds_already_in_git_leave_the_index_but_stay_on_disk()
+    {
+        var repo = await UnpreparedCloneAsync();
+        foreach (var rel in new[] { "Library/ArtifactDB", "Library/sub/cache.bin", "Temp/x.tmp", "Builds/game.exe", "Assets/Plugins/Native.dll" })
+        {
+            var full = Path.Combine(repo.Root, rel.Replace('/', Path.DirectorySeparatorChar));
+            Directory.CreateDirectory(Path.GetDirectoryName(full)!);
+            File.WriteAllText(full, "x");
+        }
+        await repo.Git.RunCheckedAsync("add", "-f", "-A");
+        await repo.Git.RunCheckedAsync("commit", "-q", "-m", "junk by mistake");
+
+        var setup = new ProjectSetup(repo, "Аня", "Боря");
+        var plan = await setup.PlanAsync();
+        Assert.Contains(plan.Changes, c => c.Path.Contains("Library/") && c.Path.Contains("Temp/") && c.Description.Contains("убрать из git 4"));
+
+        var result = await setup.ApplyAsync();
+        Assert.Equal(OpStatus.Done, result.Status);
+        Assert.Contains("из git убрано 4", result.Message);
+        var tracked = await repo.Git.OutAsync("ls-files");
+        Assert.DoesNotContain("Library/", tracked);
+        Assert.DoesNotContain("Temp/", tracked);
+        Assert.DoesNotContain("Builds/", tracked);
+        Assert.Contains("Assets/Plugins/Native.dll", tracked); // plugins inside Assets are legitimate
+        Assert.True(File.Exists(Path.Combine(repo.Root, "Library", "ArtifactDB")));
+        Assert.True(File.Exists(Path.Combine(repo.Root, "Builds", "game.exe")));
+        Assert.False(await repo.HasTrackedChangesAsync());
+    }
+
+    [Fact]
     public async Task Crlf_checkout_shows_false_changes_until_the_project_is_prepared()
     {
         var repo = await UnpreparedCloneAsync();

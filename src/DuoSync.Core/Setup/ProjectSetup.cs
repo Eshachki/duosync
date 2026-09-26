@@ -21,6 +21,9 @@ public sealed class ProjectSetup
     public const string BridgeVersion = "0.1.0";
     const string LocalStampName = "local-setup.v1";
 
+    /// <summary>Unity's generated folders in the project root: in git by mistake they travel with every exchange.</summary>
+    static readonly string[] JunkDirs = { "Library", "Temp", "Obj", "Build", "Builds", "Logs", "UserSettings", "MemoryCaptures", "Recordings", "BuildReports", "ProfilerCaptures" };
+
     static readonly string[] DisabledPatterns = { "merge=unityyamlmerge", "merge=lfs" };
     /// <summary>
     /// Any clean/smudge filter except LFS: it runs only where it is installed, so the two computers would see
@@ -58,6 +61,10 @@ public sealed class ProjectSetup
         if (NeedsBridge())
             changes.Add(new SetupChange(BridgeInstaller.PackageDir,
                 "мост DuoSync для Unity: сохраняет сцены перед обменом и открывает изменённые заново"));
+        var junk = await TrackedJunkAsync();
+        if (junk.Count > 0)
+            changes.Add(new SetupChange(string.Join(", ", junk.Select(j => j.Dir + "/")),
+                $"убрать из git {Ru.Files(junk.Sum(j => j.Files))}, попавших туда по ошибке. С диска ничего не удаляется"));
         return new SetupPlan(changes, warnings);
     }
 
@@ -90,6 +97,7 @@ public sealed class ProjectSetup
         if (written.Count > 0) await git.RunCheckedAsync(new[] { "add", "--" }.Concat(written));
         // Re-apply the clean filters with the new attributes: line endings to LF, binary files to LFS.
         await git.RunCheckedAsync(new[] { "add", "--renormalize", "." }, new GitRunOptions { Timeout = TimeSpan.FromMinutes(30) });
+        var untracked = await UntrackIgnoredAsync();
 
         var quiet = await git.RunAsync("diff", "--cached", "--quiet");
         if (quiet.ExitCode == 0)
@@ -99,6 +107,7 @@ public sealed class ProjectSetup
         var shown = written.Where(w => !w.StartsWith(BridgeInstaller.PackageDir, StringComparison.Ordinal)).ToList();
         if (written.Count > shown.Count) shown.Add("мост Unity");
         var msg = "Проект подготовлен: " + (shown.Count > 0 ? string.Join(", ", shown) : "нормализованы концы строк") +
+                  (untracked > 0 ? $"; из git убрано {Ru.Files(untracked)}, которые не должны туда попадать (на диске они остались)" : "") +
                   ". Чтобы изменения ушли на GitHub, нажми «Отправить»." +
                   (warnings.Count > 0 ? " Обрати внимание: " + string.Join(" ", warnings) : "");
         return new OpResult(OpStatus.Done, msg) { Files = written };
@@ -154,6 +163,39 @@ public sealed class ProjectSetup
         if (vcs != null && !vcs.Contains("Visible Meta Files"))
             warnings.Add("В Unity включи Project Settings → Version Control → Mode: Visible Meta Files.");
         return (files, warnings);
+    }
+
+    /// <summary>Unity's generated folders that git tracks, with the number of files in each.</summary>
+    async Task<List<(string Dir, int Files)>> TrackedJunkAsync()
+    {
+        var r = await _repo.Git.RunAsync("ls-files", "-z");
+        if (!r.Ok) return new List<(string, int)>();
+        return GitParse.SplitZ(r.StdOutBytes)
+            .Select(p => p.Split('/')[0])
+            .Select(top => JunkDirs.FirstOrDefault(d => string.Equals(d, top, StringComparison.OrdinalIgnoreCase)))
+            .Where(d => d != null)
+            .GroupBy(d => d!)
+            .Select(g => (g.Key, g.Count()))
+            .OrderBy(x => Array.IndexOf(JunkDirs, x.Key))
+            .ToList();
+    }
+
+    /// <summary>
+    /// Files git tracks although .gitignore (just written) excludes them: Library, builds, logs. They leave the index
+    /// in the setup commit and stay on disk. Returns how many.
+    /// </summary>
+    async Task<int> UntrackIgnoredAsync()
+    {
+        var r = await _repo.Git.RunCheckedAsync("ls-files", "-z", "--cached", "--ignored", "--exclude-standard");
+        var paths = GitParse.SplitZ(r.StdOutBytes);
+        if (paths.Count == 0) return 0;
+        await _repo.Git.RunCheckedAsync(new[] { "rm", "-r", "--cached", "--quiet", "--pathspec-from-file=-", "--pathspec-file-nul" },
+            new GitRunOptions
+            {
+                StdIn = Encoding.UTF8.GetBytes(string.Join('\0', paths) + "\0"),
+                Timeout = TimeSpan.FromMinutes(10),
+            });
+        return paths.Count;
     }
 
     /// <summary>Tracked or new .asset files that are not YAML (TerrainData, NavMesh, …) must live in LFS as binaries.</summary>
