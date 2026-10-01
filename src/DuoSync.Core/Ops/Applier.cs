@@ -20,6 +20,8 @@ public sealed class Applier
     public TimeSpan LockProbeDelay { get; init; } = TimeSpan.FromMilliseconds(500);
     /// <summary>Tests switch the probe off to reproduce git failing half way through.</summary>
     public bool LockProbeEnabled { get; set; } = true;
+    /// <summary>The window's progress line: checkout downloads the LFS files of what arrives.</summary>
+    public Action<string>? Progress { get; init; }
 
     public Applier(Repo repo, Snapshots snapshots, IUnityBridge unity)
     {
@@ -67,8 +69,8 @@ public sealed class Applier
             return OpResult.Blocked($"Файл «{locked}» занят (Unity или антивирус). Повтори через минуту или закрой Unity и повтори.");
         }
 
-        var r = await _repo.Git.RunAsync(new[] { "checkout", "--no-overwrite-ignore", "-B", _repo.Branch, to },
-            new GitRunOptions { Timeout = TimeSpan.FromMinutes(30) }, ct);
+        var r = await _repo.Git.RunAsync(new[] { "checkout", "--no-overwrite-ignore", "--progress", "-B", _repo.Branch, to },
+            new GitRunOptions { Timeout = TimeSpan.FromMinutes(30), Progress = Progress }, ct);
         if (!r.Ok)
         {
             if (await _repo.HeadAsync() == from && !await IsPartiallyAppliedAsync(from, to, paths))
@@ -238,7 +240,7 @@ public sealed class Applier
         if (corrupt)
         {
             journal.Delete();
-            return OpResult.Blocked("Журнал прерванной операции повреждён. Проверь состояние и нажми «Починить».");
+            return OpResult.Blocked("Журнал прерванной операции повреждён и удалён. Работа сохранена в git. Нажми «Отправить отчёт», если что-то выглядит не так, и повтори операцию.");
         }
         if (j == null) return null;
 
@@ -264,7 +266,7 @@ public sealed class Applier
             return new OpResult(OpStatus.Failed, $"Операция «{j.Label}» была прервана. Всё возвращено как было." +
                 (kept.Count > 0 ? $" Оставлены: {string.Join(", ", kept)}." : ""));
         }
-        return OpResult.Blocked("После прерванной операции проект в неожиданном состоянии. Нажми «Починить».",
+        return OpResult.Blocked("После прерванной операции проект в неожиданном состоянии, программа ничего не трогала. Работа сохранена в git: нажми «Отправить отчёт» и разберитесь с Claude Code.",
             $"op.json from={j.From} to={j.To}, HEAD={head}");
     }
 }

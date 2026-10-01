@@ -98,6 +98,44 @@ public class SetupTests : IDisposable
     }
 
     [Fact]
+    public async Task Own_git_on_master_moves_to_main()
+    {
+        var repo = await UnpreparedCloneAsync();
+        await repo.Git.RunCheckedAsync("branch", "-m", "master");
+        Assert.True(await ProjectSetup.MoveToMainAsync(repo));
+        Assert.Equal("refs/heads/main", await repo.SymbolicHeadAsync());
+        Assert.False(await ProjectSetup.MoveToMainAsync(repo));
+    }
+
+    [Fact]
+    public async Task History_with_a_file_too_big_for_GitHub_starts_fresh_and_keeps_the_old_one()
+    {
+        var repo = await UnpreparedCloneAsync();
+        var big = Path.Combine(repo.Root, "Assets", "Big.asset");
+        File.WriteAllText(big, "%YAML 1.1\n" + new string('x', 5000));
+        await repo.Git.RunCheckedAsync("add", "-A");
+        await repo.Git.RunCheckedAsync("commit", "-q", "-m", "big");
+        File.WriteAllText(big, "%YAML 1.1\nsmall\n");
+        await repo.Git.RunCheckedAsync("add", "-A");
+        await repo.Git.RunCheckedAsync("commit", "-q", "-m", "small again");
+        var old = await repo.HeadAsync();
+
+        var note = await ProjectSetup.StartFreshIfHistoryTooBigAsync(repo, limit: 1000);
+
+        Assert.Contains("Assets/Big.asset", note);
+        Assert.Equal(old, await repo.ReadRefAsync(ProjectSetup.OldHistoryRef));
+        Assert.Equal("1", await repo.Git.OutAsync("rev-list", "--count", "HEAD"));
+        Assert.Equal(await repo.Git.OutAsync("rev-parse", old + "^{tree}"), await repo.Git.OutAsync("rev-parse", "HEAD^{tree}"));
+        Assert.False(await repo.HasTrackedChangesAsync());
+        Assert.Null(await ProjectSetup.StartFreshIfHistoryTooBigAsync(repo, limit: 1000));
+
+        File.WriteAllText(big, "%YAML 1.1\n" + new string('y', 5000));
+        await repo.Git.RunCheckedAsync("add", "-A");
+        await repo.Git.RunCheckedAsync("commit", "-q", "-m", "big now");
+        await Assert.ThrowsAsync<InvalidOperationException>(() => ProjectSetup.StartFreshIfHistoryTooBigAsync(repo, limit: 1000));
+    }
+
+    [Fact]
     public async Task Project_without_gitignore_gets_the_full_template_with_the_peoples_rules()
     {
         var repo = await UnpreparedCloneAsync();

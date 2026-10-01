@@ -63,6 +63,71 @@ public sealed class ProjectSetup
         catch (IOException) { return false; }
     }
 
+    /// <summary>GitHub refuses files over 100 MB; a little margin.</summary>
+    public const long GitHubFileLimit = 95L * 1024 * 1024;
+    public const string OldHistoryRef = "refs/duosync/history-before-github";
+
+    /// <summary>The project's own git was on another branch (master): it becomes main. False when main exists already.</summary>
+    public static async Task<bool> MoveToMainAsync(Repo repo)
+    {
+        var sym = await repo.SymbolicHeadAsync();
+        if (sym == null || sym == repo.LocalBranchRef || await repo.ReadRefAsync(repo.LocalBranchRef) != null) return false;
+        await repo.Git.RunCheckedAsync("branch", "-m", repo.Branch);
+        return true;
+    }
+
+    public static async Task<bool> HasRemoteAsync(Repo repo) => (await repo.Git.RunAsync("remote", "get-url", repo.Remote)).Ok;
+
+    /// <summary>
+    /// Before the first send of a project that had its own git: when its history holds a file GitHub will not take
+    /// (over 100 MB, e.g. an old generated asset), GitHub gets the project as it is now in one commit and the old
+    /// history stays here under <see cref="OldHistoryRef"/>. Returns a line for the person, or null when nothing was done.
+    /// A file that big in the current version cannot be helped this way: that is an exception with its name.
+    /// </summary>
+    public static async Task<string?> StartFreshIfHistoryTooBigAsync(Repo repo, long limit = GitHubFileLimit)
+    {
+        var head = await repo.HeadAsync();
+        if (head == null) return null;
+        var current = await BigBlobsAsync(repo, limit, new[] { "ls-tree", "-r", "-z", "--format=%(objectname) %(path)", head }, nul: true);
+        if (current.Count > 0)
+            throw new InvalidOperationException($"Файл {current[0]} больше 100 МБ: GitHub его не примет. Перенеси его в LFS или уменьши.");
+        var history = await BigBlobsAsync(repo, limit, new[] { "rev-list", "--objects", head }, nul: false);
+        if (history.Count == 0) return null;
+        var commits = int.Parse(await repo.Git.OutAsync("rev-list", "--count", head));
+        await repo.UpdateRefAsync(OldHistoryRef, head);
+        var fresh = (await repo.Git.RunCheckedAsync(new[] { "commit-tree", head + "^{tree}", "-F", "-" }, new GitRunOptions
+        {
+            StdIn = Encoding.UTF8.GetBytes($"Проект на GitHub: начало\n\nИстория до этого ({commits}) осталась на компьютере, где проект создавали: {OldHistoryRef}.\n\nDuoSync: setup\n"),
+        })).StdOutTrimmed;
+        await repo.Git.RunCheckedAsync("update-ref", repo.LocalBranchRef, fresh, head);
+        return $"В старой истории есть файлы больше 100 МБ ({history[0]}), GitHub их не примет. На GitHub ушёл проект в нынешнем виде, " +
+               $"старая история ({commits} коммитов) осталась у тебя.";
+    }
+
+    /// <summary>Paths of blobs over the limit among the objects a command lists ("&lt;id&gt; &lt;path&gt;" per entry).</summary>
+    static async Task<List<string>> BigBlobsAsync(Repo repo, long limit, string[] list, bool nul)
+    {
+        var listed = await repo.Git.RunCheckedAsync(list, new GitRunOptions { Timeout = TimeSpan.FromMinutes(10) });
+        var entries = (nul ? GitParse.SplitZ(listed.StdOutBytes) : listed.StdOut.Split('\n', StringSplitOptions.RemoveEmptyEntries).ToList())
+            .Select(e => e.TrimEnd('\r')).Where(e => e.Length >= 40).ToList();
+        if (entries.Count == 0) return new List<string>();
+        var ids = string.Join("\n", entries.Select(e => e.Split(' ', 2)[0])) + "\n";
+        var sizes = await repo.Git.RunCheckedAsync(new[] { "cat-file", "--batch-check=%(objecttype) %(objectsize)" },
+            new GitRunOptions { StdIn = Encoding.UTF8.GetBytes(ids), Timeout = TimeSpan.FromMinutes(10) });
+        var lines = sizes.StdOut.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        var big = new List<string>();
+        for (int i = 0; i < lines.Length && i < entries.Count; i++)
+        {
+            var f = lines[i].Split(' ');
+            if (f.Length == 2 && f[0] == "blob" && long.TryParse(f[1], out var size) && size > limit)
+            {
+                var parts = entries[i].Split(' ', 2);
+                big.Add(parts.Length > 1 ? parts[1] : parts[0]);
+            }
+        }
+        return big.Distinct().ToList();
+    }
+
     /// <summary>What <see cref="ApplyAsync"/> would change, for the confirmation screen.</summary>
     public async Task<SetupPlan> PlanAsync()
     {

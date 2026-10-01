@@ -170,7 +170,7 @@ public class ExchangeTests
         var got = await sb.Owner.Engine.ReceiveAsync();
 
         Assert.Equal(OpStatus.Blocked, got.Status);
-        Assert.Contains("Починить", got.Message);
+        Assert.Contains("незавершённая операция git", got.Message);
     }
 
     [Fact]

@@ -97,6 +97,11 @@ sealed class MainForm : Form
                 ReportDialog.Show(this, $"Отчёт программы: {peer.Name}", "Это состояние программы на другом компьютере, как она его прислала. Файлов проекта в отчёте нет.", peer.ToText());
         };
         Resize += (_, _) => FitLabels();
+        // While an operation runs, the elapsed time ticks even when git is silent.
+        var tick = new System.Windows.Forms.Timer { Interval = 1000 };
+        tick.Tick += (_, _) => { if (Current is { Busy: true }) Render(); };
+        tick.Start();
+        Disposed += (_, _) => tick.Dispose();
         FitLabels();
         FormClosing += (_, e) =>
         {
@@ -278,7 +283,7 @@ sealed class MainForm : Form
             _peer.ForeColor = peer.HasProblem ? Color.FromArgb(170, 30, 30) : Color.DimGray;
         }
         _incoming.ForeColor = Icons.ColorOf(st?.State ?? SyncState.Busy);
-        _incoming.Text = c.Busy ? "Идёт операция… " + (c.Progress ?? "") : st?.State switch
+        _incoming.Text = c.Busy ? $"Идёт операция{Elapsed(c.StartedUtc)}… " + (c.Progress ?? "") : st?.State switch
         {
             null => "Проверяю…",
             SyncState.Offline => "Нет связи с GitHub. Работа сохранена у тебя.",
@@ -296,6 +301,14 @@ sealed class MainForm : Form
             : "";
         _receive.Text = st is { State: SyncState.Incoming or SyncState.Both } ? "Получить ↓" : "Получить";
         Icon = Icons.For(st?.State ?? SyncState.Busy);
+    }
+
+    /// <summary>" (2 мин 05 с)" since the start of the operation.</summary>
+    static string Elapsed(DateTime? since)
+    {
+        if (since is not { } start) return "";
+        var t = DateTime.UtcNow - start;
+        return t.TotalSeconds < 5 ? "" : t.TotalMinutes >= 1 ? $" ({(int)t.TotalMinutes} мин {t.Seconds:00} с)" : $" ({t.Seconds} с)";
     }
 
     static string Quote(IReadOnlyList<string> subjects) => subjects.Count == 0 ? "обнову: " : $"«{subjects[0]}»: ";

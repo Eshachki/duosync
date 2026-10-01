@@ -21,6 +21,11 @@ public sealed class GitRunOptions
     public bool NonInteractive { get; init; }
     public IReadOnlyDictionary<string, string>? Env { get; init; }
     public string? WorkingDirectory { get; init; }
+    /// <summary>
+    /// Long network steps: short Russian lines about how far git and git-lfs got («Отправляю проект: 45%…»).
+    /// Push, fetch and clone also need <c>--progress</c> in their arguments, or git prints nothing without a terminal.
+    /// </summary>
+    public Action<string>? Progress { get; init; }
 }
 
 public sealed class GitException : Exception
@@ -85,13 +90,23 @@ public sealed class GitRunner
         if (options.NonInteractive) psi.Environment["GCM_INTERACTIVE"] = "never";
         if (options.Env != null)
             foreach (var (k, v) in options.Env) psi.Environment[k] = v;
+        // git-lfs reports transfers only to a terminal or to this file.
+        string? lfsProgress = null;
+        if (options.Progress != null)
+        {
+            lfsProgress = Path.Combine(Path.GetTempPath(), $"duosync-lfs-{Guid.NewGuid():N}.txt");
+            psi.Environment["GIT_LFS_PROGRESS"] = lfsProgress;
+        }
 
         using var proc = new Process { StartInfo = psi };
         proc.Start();
 
         var stdoutBuffer = new MemoryStream();
         var stdoutTask = proc.StandardOutput.BaseStream.CopyToAsync(stdoutBuffer, CancellationToken.None);
-        var stderrTask = proc.StandardError.ReadToEndAsync(CancellationToken.None);
+        var progress = options.Progress != null ? new GitProgress(options.Progress) : null;
+        var stderrTask = progress != null ? progress.ReadStdErrAsync(proc.StandardError) : proc.StandardError.ReadToEndAsync(CancellationToken.None);
+        using var lfsWatch = new CancellationTokenSource();
+        var lfsTask = progress != null ? progress.WatchLfsAsync(lfsProgress!, lfsWatch.Token) : Task.CompletedTask;
 
         if (options.StdIn is { Length: > 0 } stdin)
         {
@@ -112,10 +127,18 @@ public sealed class GitRunner
             timedOut = !ct.IsCancellationRequested;
             try { proc.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
             await proc.WaitForExitAsync(CancellationToken.None);
-            if (!timedOut) { await Task.WhenAll(stdoutTask, stderrTask); throw; }
+            if (!timedOut) { await Task.WhenAll(stdoutTask, stderrTask); await StopLfsWatchAsync(); throw; }
         }
         await Task.WhenAll(stdoutTask, stderrTask);
+        await StopLfsWatchAsync();
         return new GitResult(timedOut ? -1 : proc.ExitCode, stdoutBuffer.ToArray(), stderrTask.Result, timedOut, argList);
+
+        async Task StopLfsWatchAsync()
+        {
+            lfsWatch.Cancel();
+            try { await lfsTask; } catch (OperationCanceledException) { }
+            if (lfsProgress != null) try { File.Delete(lfsProgress); } catch (IOException) { }
+        }
     }
 
     public Task<GitResult> RunAsync(params string[] args) => RunAsync(args, null, CancellationToken.None);

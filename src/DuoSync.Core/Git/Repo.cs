@@ -91,9 +91,11 @@ public sealed class Repo
         return r.ExitCode switch { 0 => false, 1 => true, _ => throw new GitException(r) };
     }
 
-    public async Task<GitResult> FetchAsync(bool background = false, CancellationToken ct = default)
-        => await Git.RunAsync(new[] { "fetch", "--no-tags", Remote, $"+{LocalBranchRef}:{RemoteBranchRef}" },
-            new GitRunOptions { Timeout = TimeSpan.FromMinutes(10), NonInteractive = background }, ct);
+    public async Task<GitResult> FetchAsync(bool background = false, CancellationToken ct = default, Action<string>? progress = null)
+        => await Git.RunAsync(progress != null
+                ? new[] { "fetch", "--no-tags", "--progress", Remote, $"+{LocalBranchRef}:{RemoteBranchRef}" }
+                : new[] { "fetch", "--no-tags", Remote, $"+{LocalBranchRef}:{RemoteBranchRef}" },
+            new GitRunOptions { Timeout = TimeSpan.FromMinutes(10), NonInteractive = background, Progress = progress }, ct);
 
     public async Task<(GitResult Result, string? Sha)> LsRemoteBranchAsync(bool background = true, CancellationToken ct = default)
     {

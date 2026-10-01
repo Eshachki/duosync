@@ -60,7 +60,7 @@ public sealed class SyncEngine
         _opt = options;
         _unity = unity ?? NoUnity.Instance;
         _snapshots = new Snapshots(repo);
-        _applier = new Applier(repo, _snapshots, _unity);
+        _applier = new Applier(repo, _snapshots, _unity) { Progress = options.Progress };
     }
 
     public Repo Repo => _repo;
@@ -79,7 +79,14 @@ public sealed class SyncEngine
     public async Task<GitResult> PublishStatusAsync(StatusReport report, bool interactive, CancellationToken ct = default)
     {
         await RepoLock.WaitAsync(ct);
-        try { return await StatusReports.PublishAsync(_repo, report, interactive, ct); }
+        try
+        {
+            // The first branch pushed to an empty repository becomes GitHub's default one: a report must never be it.
+            var (ls, main) = await _repo.LsRemoteBranchAsync(background: !interactive, ct);
+            if (ls.Ok && main == null)
+                return new GitResult(1, Array.Empty<byte>(), "main ещё нет на GitHub: отчёт уйдёт после первой отправки проекта", false, Array.Empty<string>());
+            return await StatusReports.PublishAsync(_repo, report, interactive, ct);
+        }
         finally { RepoLock.Release(); }
     }
 
@@ -120,7 +127,7 @@ public sealed class SyncEngine
 
     async Task<GitResult> FetchWithRetryAsync(CancellationToken ct)
     {
-        var r = await WithRetryAsync(() => _repo.FetchAsync(ct: ct), "получение", ct);
+        var r = await WithRetryAsync(() => _repo.FetchAsync(ct: ct, progress: _opt.Progress), "получение", ct);
         // A brand-new, empty GitHub repository has no main yet: that is "nothing there", not an error.
         if (!r.Ok && r.StdErr.Contains("couldn't find remote ref", StringComparison.OrdinalIgnoreCase))
         {
@@ -245,13 +252,13 @@ public sealed class SyncEngine
             {
                 var lfsHead = head;
                 var lfs = await WithRetryAsync(() => _repo.Git.RunAsync(new[] { "lfs", "push", _repo.Remote, lfsHead },
-                    new GitRunOptions { Timeout = TimeSpan.FromMinutes(60) }, ct), "выгрузка файлов LFS", ct);
+                    new GitRunOptions { Timeout = TimeSpan.FromMinutes(60), Progress = _opt.Progress }, ct), "выгрузка файлов LFS", ct);
                 if (!lfs.Ok) return FetchFailed(lfs);
             }
 
             var pushHead = head;
-            var push = await WithRetryAsync(() => _repo.Git.RunAsync(new[] { "push", "--porcelain", _repo.Remote, $"{pushHead}:{_repo.LocalBranchRef}" },
-                new GitRunOptions { Timeout = TimeSpan.FromMinutes(15) }, ct), "отправка", ct);
+            var push = await WithRetryAsync(() => _repo.Git.RunAsync(new[] { "push", "--porcelain", "--progress", _repo.Remote, $"{pushHead}:{_repo.LocalBranchRef}" },
+                new GitRunOptions { Timeout = TimeSpan.FromMinutes(15), Progress = _opt.Progress }, ct), "отправка", ct);
             var refs = GitParse.ParsePushPorcelain(push.StdOut);
             var mine = refs.FirstOrDefault(x => x.Ref == _repo.LocalBranchRef);
 
@@ -365,13 +372,16 @@ public sealed class SyncEngine
         await new Setup.ProjectSetup(_repo, _opt.MeName, _opt.FriendName).EnsureLocalAsync();
         if (!_unity.IsOpen && UnityDetector.IsProjectOpen(_repo.Root))
             return OpResult.Blocked("Проект открыт в Unity. Пока мост DuoSync в проект не установлен, закрой Unity перед «Получить» и «Отправить».");
+        // A project with its own git before DuoSync is often on master: renaming is safe while main does not exist.
+        if (await Setup.ProjectSetup.MoveToMainAsync(_repo))
+            await FeedAsync("recover", $"Ветка проекта переименована в {_repo.Branch}: DuoSync работает только с ней.");
         var sym = await _repo.SymbolicHeadAsync();
         if (sym != _repo.LocalBranchRef)
-            return OpResult.Blocked($"Проект не на ветке {_repo.Branch} (кто-то переключал git вручную). Нажми «Починить».");
+            return OpResult.Blocked($"Проект не на ветке {_repo.Branch}: git переключали вручную. Попроси Claude Code в папке проекта вернуть ветку {_repo.Branch}, ничего не удаляя, и повтори.");
 
         foreach (var marker in new[] { "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply" })
             if (File.Exists(Path.Combine(gitDir, marker)) || Directory.Exists(Path.Combine(gitDir, marker)))
-                return OpResult.Blocked("Найдена незавершённая операция git (кто-то запускал git вручную). Нажми «Починить».", marker);
+                return OpResult.Blocked("Найдена незавершённая операция git: его запускали вручную. Попроси Claude Code в папке проекта аккуратно её завершить или отменить, и повтори.", marker);
 
         var indexLock = Path.Combine(gitDir, "index.lock");
         if (File.Exists(indexLock))
@@ -381,7 +391,7 @@ public sealed class SyncEngine
         }
 
         var remote = await _repo.Git.RunAsync("remote", "get-url", _repo.Remote);
-        if (!remote.Ok) return OpResult.Blocked("У проекта нет адреса репозитория на GitHub. Нажми «Починить».");
+        if (!remote.Ok) return OpResult.Blocked("Проект не связан с GitHub. Нажми «Добавить проект…» → «Новый проект» и выбери эту же папку: программа создаст репозиторий и отправит проект.");
 
         var recovered = await _applier.RecoverAsync(ct);
         if (recovered != null)
@@ -493,12 +503,12 @@ public sealed class SyncEngine
         if (_opt.PushLfs)
         {
             var lfs = await WithRetryAsync(() => _repo.Git.RunAsync(new[] { "lfs", "push", _repo.Remote, work },
-                new GitRunOptions { Timeout = TimeSpan.FromMinutes(60) }, ct), "выгрузка файлов LFS", ct);
+                new GitRunOptions { Timeout = TimeSpan.FromMinutes(60), Progress = _opt.Progress }, ct), "выгрузка файлов LFS", ct);
             if (!lfs.Ok) return FetchFailed(lfs);
         }
         var branch = RequestBranchRef;
-        Task<GitResult> Push() => WithRetryAsync(() => _repo.Git.RunAsync(new[] { "push", "--porcelain", _repo.Remote, $"{work}:{branch}" },
-            new GitRunOptions { Timeout = TimeSpan.FromMinutes(15) }, ct), "отправка на слияние", ct);
+        Task<GitResult> Push() => WithRetryAsync(() => _repo.Git.RunAsync(new[] { "push", "--porcelain", "--progress", _repo.Remote, $"{work}:{branch}" },
+            new GitRunOptions { Timeout = TimeSpan.FromMinutes(15), Progress = _opt.Progress }, ct), "отправка на слияние", ct);
         var push = await Push();
         var mine = GitParse.ParsePushPorcelain(push.StdOut).FirstOrDefault(x => x.Ref == branch);
         if (mine?.Status == PushRefStatus.Rejected || (!push.Ok && GitErrors.Classify(push) == GitErrorKind.NonFastForward))
@@ -544,8 +554,8 @@ public sealed class SyncEngine
         if (request != null)
         {
             var local = $"refs/remotes/{_repo.Remote}/{request.Ref["refs/heads/".Length..]}";
-            var got = await WithRetryAsync(() => _repo.Git.RunAsync(new[] { "fetch", "--no-tags", _repo.Remote, $"+{request.Ref}:{local}" },
-                new GitRunOptions { Timeout = TimeSpan.FromMinutes(30) }, ct), "получение просьбы", ct);
+            var got = await WithRetryAsync(() => _repo.Git.RunAsync(new[] { "fetch", "--no-tags", "--progress", _repo.Remote, $"+{request.Ref}:{local}" },
+                new GitRunOptions { Timeout = TimeSpan.FromMinutes(30), Progress = _opt.Progress }, ct), "получение просьбы", ct);
             if (!got.Ok) return FetchFailed(got);
             theirs = await _repo.ReadRefAsync(local) ?? request.Sha;
             var current = await _repo.HeadAsync();
@@ -556,7 +566,7 @@ public sealed class SyncEngine
         else theirs = main;
 
         if (_opt.PushLfs)
-            await _repo.Git.RunAsync(new[] { "lfs", "fetch", _repo.Remote, theirs }, new GitRunOptions { Timeout = TimeSpan.FromMinutes(30) }, ct);
+            await _repo.Git.RunAsync(new[] { "lfs", "fetch", _repo.Remote, theirs }, new GitRunOptions { Timeout = TimeSpan.FromMinutes(30), Progress = _opt.Progress }, ct);
         if (_unity.IsOpen)
         {
             var save = await _unity.SaveAsync(ct);

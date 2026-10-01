@@ -628,9 +628,10 @@ sealed class TrayContext : ApplicationContext
 
     public async Task AddProjectInteractiveAsync(IWin32Window owner)
     {
-        // Fresh list first: the friend may have created the project a minute ago.
+        // Fresh list first: the friend may have created the project a minute ago. A button press: on a new computer
+        // without a stored GitHub login this is where git's sign-in window appears.
         if (owner is Control control) control.UseWaitCursor = true;
-        try { await DiscoverAsync(); }
+        try { await DiscoverAsync(interactive: true); }
         finally { if (owner is Control c) c.UseWaitCursor = false; }
 
         var page = new TaskDialogPage { Caption = "DuoSync", Heading = "Добавить проект", AllowCancel = true };
@@ -683,7 +684,9 @@ sealed class TrayContext : ApplicationContext
             MessageBox.Show(owner, "Это не папка Unity-проекта: в ней нет Assets и Packages.", "DuoSync", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
-        if (Directory.Exists(Path.Combine(dir, ".git")))
+        // Own git before DuoSync: linked to GitHub — just add it; not linked — create the repository like for a new project.
+        var hasGit = Directory.Exists(Path.Combine(dir, ".git"));
+        if (hasGit && (await new GitRunner(dir, Settings.MeName, Settings.MeEmail).RunAsync("remote", "get-url", "origin")).Ok)
         {
             _ = MarkAsProjectAsync(AddProject(dir));
             return;
@@ -731,7 +734,7 @@ sealed class TrayContext : ApplicationContext
         }
 
         var git = new GitRunner(dir, Settings.MeName, Settings.MeEmail);
-        await git.RunCheckedAsync("init", "-q", "-b", "main");
+        if (!hasGit) await git.RunCheckedAsync("init", "-q", "-b", "main");
         await git.RunCheckedAsync("remote", "add", "origin", url);
 
         var controller = AddProject(dir);
@@ -739,9 +742,14 @@ sealed class TrayContext : ApplicationContext
         Notify("DuoSync", $"Готовлю «{name}» и отправляю на GitHub. Большой проект может отправляться долго.", milliseconds: 5_000);
         var result = await controller.RunAsync(async engine =>
         {
+            await ProjectSetup.MoveToMainAsync(engine.Repo);
             var prepared = await new ProjectSetup(engine.Repo, Settings.MeName, Settings.FriendDisplay).ApplyAsync();
-            if (!prepared.Succeeded) return prepared;
-            return await engine.SendAsync("Новый проект");
+            if (!prepared.Succeeded && prepared.Status != OpStatus.UpToDate) return prepared;
+            string? fresh;
+            try { fresh = await ProjectSetup.StartFreshIfHistoryTooBigAsync(engine.Repo); }
+            catch (InvalidOperationException e) { return OpResult.Blocked(e.Message); }
+            var sent = await engine.SendAsync("Новый проект");
+            return fresh != null && sent.Succeeded ? sent with { Message = sent.Message + " " + fresh } : sent;
         });
         Notify("DuoSync", result.Succeeded
             ? $"«{name}» на GitHub. {Friend} увидит его у себя в DuoSync и скачает одной кнопкой."
@@ -839,19 +847,37 @@ sealed class TrayContext : ApplicationContext
         form.ShowNote($"Скачиваю «{name}» в {target}… Большой проект может качаться долго.");
         Notify("DuoSync", $"Скачиваю «{name}»… Большой проект может качаться долго.", milliseconds: 5_000);
         var git = new GitRunner(parent, Settings.MeName, Settings.MeEmail);
-        var options = new GitRunOptions { Timeout = TimeSpan.FromMinutes(90) };
-        GitResult r = await git.RunAsync(new[] { "clone", url, target }, options);
+        var options = new GitRunOptions
+        {
+            Timeout = TimeSpan.FromMinutes(90),
+            Progress = line => form.BeginInvoke(() => form.ShowNote($"Скачиваю «{name}»: {line}")),
+        };
+        GitResult r = await git.RunAsync(new[] { "clone", "--progress", url, target }, options);
         for (int attempt = 0; !r.Ok && attempt < 2 && GitErrors.Classify(r) is GitErrorKind.Network or GitErrorKind.Timeout; attempt++)
         {
             form.ShowNote($"Связь с GitHub оборвалась, повторяю скачивание «{name}»…");
             await Task.Delay(TimeSpan.FromSeconds(15));
             if (Directory.Exists(target)) { try { Directory.Delete(target, true); } catch (IOException) { } }
-            r = await git.RunAsync(new[] { "clone", url, target }, options);
+            r = await git.RunAsync(new[] { "clone", "--progress", url, target }, options);
         }
         if (!r.Ok)
         {
             form.ShowNote("Не получилось скачать: " + GitErrors.Explain(r), error: true);
             return;
+        }
+        // GitHub's default branch may be another one (e.g. a service branch pushed first): the project is main.
+        var cloned = new GitRunner(target, Settings.MeName, Settings.MeEmail);
+        var head = await cloned.RunAsync("symbolic-ref", "-q", "HEAD");
+        if (head.StdOutTrimmed != "refs/heads/main" && (await cloned.RunAsync("rev-parse", "--verify", "-q", "refs/remotes/origin/main")).Ok)
+        {
+            form.ShowNote($"Скачиваю «{name}»: раскладываю файлы основной ветки…");
+            var main = await cloned.RunAsync(new[] { "checkout", "--progress", "-B", "main", "--track", "origin/main" },
+                new GitRunOptions { Timeout = TimeSpan.FromMinutes(60), Progress = line => form.BeginInvoke(() => form.ShowNote($"Скачиваю «{name}»: {line}")) });
+            if (!main.Ok)
+            {
+                form.ShowNote("Скачалось, но не получилось открыть ветку main: " + GitErrors.Explain(main), error: true);
+                return;
+            }
         }
         var controller = AddProject(target);
         form.SelectProject(controller);

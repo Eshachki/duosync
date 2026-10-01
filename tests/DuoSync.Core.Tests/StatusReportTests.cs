@@ -57,6 +57,24 @@ public class StatusReportTests
     }
 
     [Fact]
+    public async Task No_report_before_the_project_itself_is_on_GitHub()
+    {
+        await using var sb = await CreateAsync();
+        var empty = Path.Combine(sb.Root, "empty.git");
+        var raw = new Git.GitRunner(sb.Root, "t", "t@example.invalid");
+        await raw.RunCheckedAsync("init", "--bare", "-b", "main", empty);
+        await raw.RunCheckedAsync("clone", "-q", empty, Path.Combine(sb.Root, "fresh"));
+        var repo = new Git.Repo(new Git.GitRunner(Path.Combine(sb.Root, "fresh"), "Аня", "a@example.invalid"));
+        var engine = new SyncEngine(repo, new SyncOptions { MeName = "Аня", FriendName = "Боря", PushLfs = false });
+
+        var report = await StatusReports.BuildAsync(repo, "Аня", "0.4.0", true, OpResult.Blocked("сбой"), DateTime.UtcNow, Array.Empty<string>());
+        var r = await engine.PublishStatusAsync(report, interactive: false);
+
+        Assert.False(r.Ok);
+        Assert.Equal("", (await new Git.GitRunner(empty, "t", "t@example.invalid").RunAsync("for-each-ref")).StdOutTrimmed);
+    }
+
+    [Fact]
     public async Task No_report_means_no_peer_line()
     {
         await using var sb = await CreateAsync();

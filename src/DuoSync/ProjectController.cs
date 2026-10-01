@@ -16,6 +16,8 @@ sealed class ProjectController
     public DateTime? LastResultUtc { get; private set; }
     /// <summary>Line shown while an operation waits (e.g. repeating after a dropped connection).</summary>
     public string? Progress { get; private set; }
+    /// <summary>When the running operation started: the window shows how long it has been going.</summary>
+    public DateTime? StartedUtc { get; private set; }
     /// <summary>Unfinished tasks in «Черновик», when known; the button shows the number.</summary>
     public int? TodoOpen { get; private set; }
     /// <summary>ETag of the last background count of «Черновик»: an unchanged list costs nothing to ask again.</summary>
@@ -64,6 +66,7 @@ sealed class ProjectController
     {
         Busy = true;
         Progress = null;
+        StartedUtc = DateTime.UtcNow;
         Changed?.Invoke();
         try
         {
@@ -77,6 +80,7 @@ sealed class ProjectController
         {
             Busy = false;
             Progress = null;
+            StartedUtc = null;
         }
         LastResultUtc = DateTime.UtcNow;
         AppLog.Write($"{Entry.Name}: {LastResult.Status}: {LastResult.Message}" + (LastResult.Detail is { Length: > 0 } d ? " | " + d : ""));
