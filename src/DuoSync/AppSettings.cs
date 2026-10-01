@@ -14,6 +14,8 @@ public sealed class ProjectEntry
     public string? FriendLogin { get; set; }
     /// <summary>Last merge request of the friend already announced (one notification per request).</summary>
     public string? NotifiedRequest { get; set; }
+    /// <summary>The last report on GitHub says something went wrong: the next success sends a fresh one.</summary>
+    public bool ProblemReported { get; set; }
 }
 
 /// <summary>%APPDATA%\DuoSync\settings.json. Losing it is harmless: projects are added again, the rest lives in git.</summary>

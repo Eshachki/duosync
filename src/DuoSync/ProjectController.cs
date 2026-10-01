@@ -85,8 +85,14 @@ sealed class ProjectController
         LastResultUtc = DateTime.UtcNow;
         AppLog.Write($"{Entry.Name}: {LastResult.Status}: {LastResult.Message}" + (LastResult.Detail is { Length: > 0 } d ? " | " + d : ""));
         // Something went wrong: the other side sees why without asking (§6а). Offline: GitHub is out of reach anyway.
-        if (_settings.ShareStatus && !LastResult.Succeeded && LastResult.Status is not (OpStatus.Offline or OpStatus.Requested))
+        // After a success the old failure report must not hang on the other side: a fresh one replaces it.
+        var failed = !LastResult.Succeeded && LastResult.Status is not (OpStatus.Offline or OpStatus.Requested);
+        if (_settings.ShareStatus && (failed || (LastResult.Succeeded && Entry.ProblemReported)))
+        {
+            Entry.ProblemReported = failed;
+            _settings.Save();
             _ = Task.Run(() => PublishReportAsync(interactive: false));
+        }
         await RefreshAsync();
         return LastResult;
     }
