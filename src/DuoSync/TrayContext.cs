@@ -567,7 +567,8 @@ sealed class TrayContext : ApplicationContext
         var changed = false;
         foreach (var c in Controllers.ToList())
         {
-            if (c.Entry.GitHub == null && await RemoteRepositoryAsync(c.Engine.Repo.Git) is { } name)
+            // From the folder's real origin every time: a folder moved to another repository must not keep the old name.
+            if (await RemoteRepositoryAsync(c.Engine.Repo.Git) is { } name && !string.Equals(name, c.Entry.GitHub, StringComparison.OrdinalIgnoreCase))
             {
                 c.Entry.GitHub = name;
                 changed = true;
