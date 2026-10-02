@@ -30,6 +30,7 @@ static class Program
         try
         {
             Installer.CleanupLeftovers();
+            Installer.EnsureShortcuts();
             var snapshot = ArgValue(args, "--snapshot");
             Application.Run(new TrayContext(showWindow: !args.Contains("--tray"), snapshotPath: snapshot));
         }

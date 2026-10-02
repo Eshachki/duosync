@@ -67,6 +67,48 @@ static class Installer
             }
     }
 
+    /// <summary>
+    /// «DuoSync» in the Start menu (put back when missing) and once on the desktop (a removed desktop icon stays removed).
+    /// Only the installed copy; best effort.
+    /// </summary>
+    public static void EnsureShortcuts()
+    {
+        if (!AutoStart.IsInstalledCopy) return;
+        try
+        {
+            var startMenu = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Programs), "DuoSync.lnk");
+            if (!File.Exists(startMenu)) CreateShortcut(startMenu);
+            var once = Path.Combine(AutoStart.InstallDir, "desktop-shortcut.done");
+            if (!File.Exists(once))
+            {
+                var desktop = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), "DuoSync.lnk");
+                if (!File.Exists(desktop)) CreateShortcut(desktop);
+                File.WriteAllText(once, DateTime.UtcNow.ToString("O"));
+            }
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Runtime.InteropServices.COMException
+                                      or System.Reflection.TargetInvocationException or ArgumentException)
+        {
+            AppLog.Error("shortcuts", e);
+        }
+    }
+
+    /// <summary>A .lnk to the installed exe through the Windows Script Host object every Windows has.</summary>
+    static void CreateShortcut(string path)
+    {
+        var type = Type.GetTypeFromProgID("WScript.Shell") ?? throw new ArgumentException("WScript.Shell недоступен");
+        var shell = Activator.CreateInstance(type)!;
+        const System.Reflection.BindingFlags Call = System.Reflection.BindingFlags.InvokeMethod;
+        const System.Reflection.BindingFlags Set = System.Reflection.BindingFlags.SetProperty;
+        var link = type.InvokeMember("CreateShortcut", Call, null, shell, new object[] { path })!;
+        var linkType = link.GetType();
+        linkType.InvokeMember("TargetPath", Set, null, link, new object[] { InstalledExe });
+        linkType.InvokeMember("WorkingDirectory", Set, null, link, new object[] { AutoStart.InstallDir });
+        linkType.InvokeMember("Description", Set, null, link, new object[] { "DuoSync: обмен Unity-проектом" });
+        linkType.InvokeMember("IconLocation", Set, null, link, new object[] { InstalledExe + ",0" });
+        linkType.InvokeMember("Save", Call, null, link, null);
+    }
+
     /// <summary>An old exe from Downloads must not replace a newer installed copy: it only starts that copy.</summary>
     static bool IsNewer(string installedExe)
     {
