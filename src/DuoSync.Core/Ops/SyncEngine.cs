@@ -193,8 +193,12 @@ public sealed class SyncEngine
         await _repo.UpdateRefAsync(ReceiveIncomingRef, theirs);
         var subjects = await _repo.CommitSubjectsAsync($"{snapshot}..{theirs}", 5);
         foreach (var note in notes) await FeedAsync("merge", note);
+        // The own merge request came back merged: say it here too, the tray notification is easy to miss.
+        var requestMerged = await _repo.ReadRefAsync(RequestRef) is { } request && await _repo.IsAncestorAsync(request, theirs);
+        if (requestMerged) await ClearRequestAsync();
         var text = $"Получено {Ru.Files(applied.Files.Count)} — прислал {_opt.FriendName}" +
-                   (subjects.Count > 0 ? $" («{string.Join("», «", subjects)}»)" : "") + "." + UnityNote(applied);
+                   (subjects.Count > 0 ? $" («{string.Join("», «", subjects)}»)" : "") + "." +
+                   (requestMerged ? $" Твоя работа, которая ждала слияния, слита: её слил {_opt.FriendName}." : "") + UnityNote(applied);
         await FeedAsync("receive", text);
         return applied with { Message = text };
     }

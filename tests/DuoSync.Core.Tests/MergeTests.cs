@@ -83,7 +83,10 @@ public class MergeTests
         // «Отправить» at the integrator: the friend sees the request merged and gets the result by fast-forward.
         Assert.Equal(OpStatus.Done, (await sb.Owner.Engine.SendAsync(null)).Status);
         Assert.True((await sb.Friend.Engine.CheckStatusAsync()).RequestMerged);
-        Assert.Equal(OpStatus.Done, (await sb.Friend.Engine.ReceiveAsync()).Status);
+        var received = await sb.Friend.Engine.ReceiveAsync();
+        Assert.Equal(OpStatus.Done, received.Status);
+        Assert.Contains("Твоя работа, которая ждала слияния, слита: её слил Аня.", received.Message);
+        Assert.False((await sb.Friend.Engine.CheckStatusAsync()).RequestMerged);
         Assert.Equal(Resolved, sb.Friend.Read(Player));
         Assert.Equal(await sb.RemoteHeadAsync(), await sb.Friend.HeadAsync());
     }
