@@ -271,17 +271,32 @@ public sealed partial class GitHubClient
     static async Task<HttpResponseMessage> SendRawAsync(HttpRequestMessage request, CancellationToken ct)
     {
         try { return await Http.SendAsync(request, ct); }
-        catch (HttpRequestException e) { throw new GitHubException(GitHubError.Network, "Нет связи с GitHub.", e); }
+        // The reason (DNS, reset, TLS) goes into the message: the log is all there is on the friend's computer.
+        catch (HttpRequestException e) { throw new GitHubException(GitHubError.Network, $"Нет связи с GitHub ({e.InnerException?.Message ?? e.Message}).", e); }
         catch (TaskCanceledException e) when (!ct.IsCancellationRequested) { throw new GitHubException(GitHubError.Network, "GitHub не ответил вовремя.", e); }
     }
 
+    /// <summary>Pauses before repeating a request after a dropped connection (GitHub from Russia and Kazakhstan drops).</summary>
+    public static IReadOnlyList<TimeSpan> RetryDelays { get; set; } = new[] { TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(6) };
+
     async Task<JsonDocument> SendAsync(HttpMethod method, string path, object? body, CancellationToken ct)
     {
-        using var request = NewRequest(method, path, body);
-        using var response = await SendRawAsync(request, ct);
-        var text = await response.Content.ReadAsStringAsync(ct);
-        if (response.IsSuccessStatusCode) return JsonDocument.Parse(text.Length == 0 ? "null" : text);
-        throw Error(response.StatusCode, text);
+        for (int attempt = 0; ; attempt++)
+        {
+            try
+            {
+                using var request = NewRequest(method, path, body);
+                using var response = await SendRawAsync(request, ct);
+                var text = await response.Content.ReadAsStringAsync(ct);
+                if (response.IsSuccessStatusCode) return JsonDocument.Parse(text.Length == 0 ? "null" : text);
+                throw Error(response.StatusCode, text);
+            }
+            // A repeated POST is safe here: creating a repository that the lost answer already created is «already exists».
+            catch (GitHubException e) when (e.Kind == GitHubError.Network && attempt < RetryDelays.Count)
+            {
+                await Task.Delay(RetryDelays[attempt], ct);
+            }
+        }
     }
 
     static GitHubException Error(HttpStatusCode status, string body)
