@@ -89,7 +89,7 @@ public static class Templates
         "/Assets/_Recovery/", "/Assets/_Recovery.meta", "/Assets/_Local/", "/Assets/_Local.meta",
         "# Локальные настройки нейросетей и MCP",
         "/.duosync/", "/.mcp.json", "/opencode.json", "/.opencode/", "/.cline/", "/.claude/settings.local.json",
-        "/.claude/skills/*", "!/.claude/skills/project-*/", "/.agents/skills/*",
+        "/.claude/skills/*", "!/.claude/skills/project-*/", "/.claude/scheduled_tasks.lock", "/.agents/skills/*",
         BlockEnd,
     }) + "\n";
 
