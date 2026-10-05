@@ -23,8 +23,8 @@ if (git -C $root status --porcelain) { throw 'Working tree is not clean: commit 
 # must not end up in the exe (0.4.5 got a line that was not committed yet).
 $sha = (git -C $root rev-parse HEAD).Trim()
 $src = Join-Path ([IO.Path]::GetTempPath()) "duosync-release-$version"
-if (Test-Path $src) { git -C $root worktree remove --force $src 2>$null; if (Test-Path $src) { Remove-Item -Recurse -Force $src } }
-git -C $root worktree add --detach $src $sha
+if (Test-Path $src) { try { git -C $root worktree remove --force $src } catch { }; if (Test-Path $src) { Remove-Item -Recurse -Force $src } }
+git -C $root worktree add --quiet --detach $src $sha
 if ($LASTEXITCODE -ne 0) { throw 'worktree add failed' }
 $out = Join-Path $root "artifacts\release\$version"
 try {
