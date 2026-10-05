@@ -37,7 +37,7 @@ sealed class MainForm : Form
         ClientSize = new Size(800, 560);
         MinimumSize = new Size(640, 420);
         StartPosition = FormStartPosition.CenterScreen;
-        Icon = Icons.For(SyncState.InSync);
+        Icon = Icons.App;
 
         var top = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = false };
         top.Controls.AddRange(new Control[] { new Label { Text = "Проект:", AutoSize = true, Padding = new Padding(0, 6, 0, 0) }, _projects, _add });
@@ -300,7 +300,6 @@ sealed class MainForm : Form
             ? $"У тебя не отправлено: {Ru.Files(st.UnsentFiles.Count)} ({string.Join(", ", st.UnsentFiles.Take(3))}{(st.UnsentFiles.Count > 3 ? " и ещё " + (st.UnsentFiles.Count - 3) : "")})"
             : "";
         _receive.Text = st is { State: SyncState.Incoming or SyncState.Both } ? "Получить ↓" : "Получить";
-        Icon = Icons.For(st?.State ?? SyncState.Busy);
     }
 
     /// <summary>" (2 мин 05 с)" since the start of the operation.</summary>

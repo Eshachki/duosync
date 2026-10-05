@@ -8,6 +8,10 @@ namespace DuoSync;
 static class Icons
 {
     static readonly Dictionary<Color, Icon> Cache = new();
+    static Icon? _app;
+
+    /// <summary>The program's own icon (embedded in the exe): windows, taskbar, shortcuts. State colours stay in the tray.</summary>
+    public static Icon App => _app ??= Icon.ExtractAssociatedIcon(Application.ExecutablePath) ?? For(SyncState.InSync);
 
     public static Color ColorOf(SyncState state) => state switch
     {

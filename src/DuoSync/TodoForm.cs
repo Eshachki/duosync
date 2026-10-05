@@ -60,7 +60,7 @@ sealed class TodoForm : Form
         ClientSize = new Size(620, 540);
         MinimumSize = new Size(460, 340);
         StartPosition = FormStartPosition.CenterScreen;
-        Icon = Icons.For(Core.Ops.SyncState.InSync);
+        Icon = Icons.App;
 
         var top = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 4 };
         top.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));

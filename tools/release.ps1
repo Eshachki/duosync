@@ -19,14 +19,24 @@ $tag = "v$version"
 if (git -C $root tag --list $tag) { throw "Tag $tag already exists: bump Version in Directory.Build.props" }
 if (git -C $root status --porcelain) { throw 'Working tree is not clean: commit first' }
 
-dotnet test (Join-Path $root 'DuoSync.slnx')
-if ($LASTEXITCODE -ne 0) { throw 'Tests failed' }
-
+# Build from a separate checkout of this commit: edits made in the working folder while the release builds
+# must not end up in the exe (0.4.5 got a line that was not committed yet).
+$sha = (git -C $root rev-parse HEAD).Trim()
+$src = Join-Path ([IO.Path]::GetTempPath()) "duosync-release-$version"
+if (Test-Path $src) { git -C $root worktree remove --force $src 2>$null; if (Test-Path $src) { Remove-Item -Recurse -Force $src } }
+git -C $root worktree add --detach $src $sha
+if ($LASTEXITCODE -ne 0) { throw 'worktree add failed' }
 $out = Join-Path $root "artifacts\release\$version"
-if (Test-Path $out) { Remove-Item -Recurse -Force $out }
-dotnet publish (Join-Path $root 'src\DuoSync\DuoSync.csproj') -c Release -r win-x64 --self-contained true `
-    -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -p:DebugType=none -o $out
-if ($LASTEXITCODE -ne 0) { throw 'Publish failed' }
+try {
+    dotnet test (Join-Path $src 'DuoSync.slnx')
+    if ($LASTEXITCODE -ne 0) { throw 'Tests failed' }
+
+    if (Test-Path $out) { Remove-Item -Recurse -Force $out }
+    dotnet publish (Join-Path $src 'src\DuoSync\DuoSync.csproj') -c Release -r win-x64 --self-contained true `
+        -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -p:DebugType=none -o $out
+    if ($LASTEXITCODE -ne 0) { throw 'Publish failed' }
+}
+finally { git -C $root worktree remove --force $src }
 
 $exe = Join-Path $out 'DuoSync.exe'
 $info = [ordered]@{
@@ -41,7 +51,7 @@ $releaseJson = Join-Path $out 'release.json'
 $notesFile = Join-Path $out 'notes.md'
 [IO.File]::WriteAllText($notesFile, ((@($Notes) | ForEach-Object { "- $_" }) -join "`n"), $utf8)
 
-git -C $root tag $tag
+git -C $root tag $tag $sha
 git -C $root push -q origin $tag
 if ($LASTEXITCODE -ne 0) { throw 'Tag push failed' }
 gh release create $tag $exe $releaseJson --repo Eshachki/duosync --title "DuoSync $version" --notes-file $notesFile --latest
