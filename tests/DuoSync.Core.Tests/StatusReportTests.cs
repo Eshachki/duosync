@@ -75,6 +75,29 @@ public class StatusReportTests
     }
 
     [Fact]
+    public async Task Clone_made_before_the_first_send_shows_the_whole_project_as_incoming()
+    {
+        await using var sb = await CreateAsync();
+        var empty = Path.Combine(sb.Root, "late.git");
+        var raw = new Git.GitRunner(sb.Root, "t", "t@example.invalid");
+        await raw.RunCheckedAsync("init", "--bare", "-b", "main", empty);
+        await raw.RunCheckedAsync("clone", "-q", empty, Path.Combine(sb.Root, "early"));
+        var early = new Git.Repo(new Git.GitRunner(Path.Combine(sb.Root, "early"), "Боря", "b@example.invalid"));
+        var engine = new SyncEngine(early, new SyncOptions { MeName = "Боря", FriendName = "Аня", PushLfs = false });
+
+        // The project arrives on GitHub after the friend downloaded the empty repository.
+        await sb.Owner.Git.RunCheckedAsync("push", "-q", empty, "HEAD:refs/heads/main");
+
+        var status = await engine.CheckStatusAsync();
+        Assert.Equal(SyncState.Incoming, status.State);
+        Assert.Contains("Assets/Scripts/Player.cs", status.IncomingFiles);
+
+        Assert.Equal(OpStatus.Done, (await engine.ReceiveAsync()).Status);
+        Assert.True(File.Exists(Path.Combine(early.Root, "Assets", "Scripts", "Player.cs")));
+        Assert.Equal(SyncState.InSync, (await engine.CheckStatusAsync()).State);
+    }
+
+    [Fact]
     public async Task No_report_means_no_peer_line()
     {
         await using var sb = await CreateAsync();

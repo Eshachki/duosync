@@ -537,7 +537,17 @@ sealed class TrayContext : ApplicationContext
                 return;
             }
             var local = await LocalRepositoriesAsync();
-            Available = all.Where(p => !local.Contains(p.FullName)).ToList();
+            // A project still on its way to GitHub (repository created, nothing pushed yet) is not offered: a download
+            // now would bring an empty folder. It shows up on a later check, once the first send has finished.
+            var available = new List<RemoteProject>();
+            foreach (var p in all.Where(p => !local.Contains(p.FullName)))
+            {
+                bool empty;
+                try { empty = await _github.IsEmptyAsync(p.FullName); }
+                catch (GitHubException) { empty = false; }
+                if (!empty) available.Add(p);
+            }
+            Available = available;
             AppLog.Write($"discovery: {all.Count} projects, {Available.Count} not here" + (Available.Count > 0 ? ": " + string.Join(", ", Available.Select(p => p.FullName)) : ""));
             AvailableChanged?.Invoke();
             RebuildMenu();
@@ -882,6 +892,11 @@ sealed class TrayContext : ApplicationContext
         }
         var controller = AddProject(target);
         form.SelectProject(controller);
+        if (!(await cloned.RunAsync("rev-parse", "--verify", "-q", "refs/remotes/origin/main")).Ok)
+        {
+            form.ShowNote($"«{name}» ещё выкладывается на GitHub: папка создана пустой. Когда в окне появится обнова, нажми «Получить».");
+            return;
+        }
         var unity = UnityVersion(target);
         var text = $"«{name}» скачан в {target}. Открой его в Unity{(unity != null ? " " + unity : "")} через Unity Hub → Add → Add project from disk.";
         form.ShowNote(text);

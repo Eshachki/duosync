@@ -82,6 +82,16 @@ public sealed class StatusChecker
         var head = await _repo.HeadAsync();
         var theirs = await _repo.RevParseAsync(_repo.RemoteBranchRef);
 
+        // Downloaded while the project was still on its way to GitHub: the folder is empty, everything is incoming.
+        if (head == null && theirs != null)
+            return new ProjectStatus(SyncState.Incoming)
+            {
+                RemoteSha = remoteSha,
+                IncomingFiles = GitParse.SplitZ((await _repo.Git.RunCheckedAsync("ls-tree", "-r", "-z", "--name-only", theirs)).StdOutBytes),
+                IncomingCommits = int.Parse(await _repo.Git.OutAsync("rev-list", "--count", "--no-merges", theirs)),
+                IncomingSubjects = await _repo.CommitSubjectsAsync(theirs, 5),
+            };
+
         var last = await _repo.ReadRefAsync(SyncEngine.LastRemoteRef);
         if (theirs != null && last != null && last != theirs && !await _repo.IsAncestorAsync(last, theirs))
             return new ProjectStatus(SyncState.Rewritten) { RemoteSha = remoteSha };
