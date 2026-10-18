@@ -17,6 +17,8 @@ sealed class TrayContext : ApplicationContext
     /// <summary>DuoSync projects on GitHub that are not on this computer yet.</summary>
     public IReadOnlyList<RemoteProject> Available { get; private set; } = Array.Empty<RemoteProject>();
     public event Action? AvailableChanged;
+    /// <summary>Claude Code was looked for again (signed in or out): the window updates its line.</summary>
+    public event Action? ClaudeChanged;
 
     static readonly TimeSpan DiscoveryInterval = TimeSpan.FromMinutes(10);
     static readonly TimeSpan UpdateInterval = TimeSpan.FromHours(6);
@@ -74,7 +76,7 @@ sealed class TrayContext : ApplicationContext
         return c;
     }
 
-    async Task DetectClaudeAsync()
+    public async Task DetectClaudeAsync()
     {
         try
         {
@@ -87,6 +89,7 @@ sealed class TrayContext : ApplicationContext
             }
             foreach (var c in Controllers) c.ApplyClaude(Claude.Exe, Settings.Integrator);
             _form?.ReloadProjects();
+            ClaudeChanged?.Invoke();
         }
         catch (Exception e) when (e is IOException or System.ComponentModel.Win32Exception or InvalidOperationException)
         {
@@ -104,6 +107,19 @@ sealed class TrayContext : ApplicationContext
         }
         else if (UpdateGuard.TakeRollbackNotice() is { } notice)
             Notify("DuoSync", notice, ToolTipIcon.Warning);
+    }
+
+    /// <summary>
+    /// «Войти в Claude»: Claude Code's own sign-in (`claude auth login`) in its console window, the browser does the rest.
+    /// When the window closes, the program looks again.
+    /// </summary>
+    public async Task LoginClaudeAsync()
+    {
+        if (Claude?.Exe is not { } exe) return;
+        AppLog.Write("claude: sign-in started");
+        var p = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(exe) { Arguments = "auth login", UseShellExecute = true });
+        if (p != null) await p.WaitForExitAsync();
+        await DetectClaudeAsync();
     }
 
     /// <summary>The friend in messages, always in the nominative («{имя} отправил», «прислал {имя}»).</summary>
@@ -208,6 +224,8 @@ sealed class TrayContext : ApplicationContext
         if (DateTime.UtcNow >= _nextDiscovery)
         {
             _nextDiscovery = DateTime.UtcNow + DiscoveryInterval;
+            // A sign-in can expire any time: look again with the project discovery.
+            if (Claude?.Installed == true) await DetectClaudeAsync();
             await DiscoverAsync();
         }
         await CountTodosAsync();

@@ -17,6 +17,9 @@ sealed class MainForm : Form
     readonly Label _request = new() { AutoSize = true, ForeColor = Color.FromArgb(170, 90, 0) };
     /// <summary>The other side's latest status report (§6а); a click shows it whole.</summary>
     readonly LinkLabel _peer = new() { AutoSize = true, LinkBehavior = LinkBehavior.HoverUnderline, Visible = false };
+    /// <summary>Whether Claude Code on this computer is signed in: merging with Claude needs it.</summary>
+    readonly Label _claude = new() { AutoSize = true, Visible = false };
+    readonly Button _claudeLogin = new() { Text = "Войти в Claude", AutoSize = true, Height = 36, Visible = false };
     readonly Button _merge = new() { Text = "Слить с Claude", AutoSize = true, Height = 36, Visible = false, Font = new Font("Segoe UI", 10f, FontStyle.Bold) };
     readonly Button _receive = new() { Text = "Получить", Width = 150, Height = 36 };
     readonly Button _send = new() { Text = "Отправить", Width = 150, Height = 36 };
@@ -43,7 +46,7 @@ sealed class MainForm : Form
         top.Controls.AddRange(new Control[] { new Label { Text = "Проект:", AutoSize = true, Padding = new Padding(0, 6, 0, 0) }, _projects, _add });
 
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
-        buttons.Controls.AddRange(new Control[] { _prepare, _merge, _receive, _send, _undo, _check, _todo, _report });
+        buttons.Controls.AddRange(new Control[] { _prepare, _claudeLogin, _merge, _receive, _send, _undo, _check, _todo, _report });
 
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, Padding = new Padding(12) };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -53,12 +56,13 @@ sealed class MainForm : Form
         layout.Controls.Add(_unsent);
         layout.Controls.Add(_request);
         layout.Controls.Add(_peer);
+        layout.Controls.Add(_claude);
         layout.Controls.Add(buttons);
         layout.Controls.Add(_message);
         layout.Controls.Add(_result);
         layout.Controls.Add(new Label { Text = "Лента проекта", AutoSize = true, ForeColor = Color.DimGray });
         layout.Controls.Add(_feed);
-        for (int i = 0; i < 10; i++) layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        for (int i = 0; i < 11; i++) layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         Controls.Add(layout);
 
@@ -87,10 +91,21 @@ sealed class MainForm : Form
             if (c == null) return;
             // Own conflict first (main is needed before a request can be merged), otherwise the friend's request.
             var request = c.LastResult?.Status == OpStatus.Conflict ? null : c.Status?.Requests.FirstOrDefault();
-            await RunAsync(e => e.MergeWithClaudeAsync(request, question => Task.FromResult(AskDialog.Ask(this, question))));
+            var merged = await RunAsync(e => e.MergeWithClaudeAsync(request, question => Task.FromResult(AskDialog.Ask(this, question))));
+            if (merged?.Message.Contains("не вошёл", StringComparison.Ordinal) == true) _ = _app.DetectClaudeAsync();
         };
         _todo.Click += (_, _) => { if (Current is { } c) _app.ShowTodo(c); };
         _report.Click += async (_, _) => await SendReportAsync();
+        _claudeLogin.Click += async (_, _) =>
+        {
+            _claudeLogin.Enabled = false;
+            ShowNote("Открылось окно входа Claude Code: войди в браузере, потом закрой окно, если оно не закроется само.");
+            try { await _app.LoginClaudeAsync(); }
+            finally { _claudeLogin.Enabled = true; }
+            ShowNote(_app.Claude?.LoggedIn == true ? "Claude Code: вход выполнен, «Слить с Claude» работает." : "Вход в Claude Code не завершён.", _app.Claude?.LoggedIn != true);
+        };
+        _app.ClaudeChanged += OnClaudeChanged;
+        Disposed += (_, _) => _app.ClaudeChanged -= OnClaudeChanged;
         _peer.LinkClicked += (_, _) =>
         {
             if (Current?.Status?.Peer is { } peer)
@@ -109,6 +124,13 @@ sealed class MainForm : Form
         };
         ReloadProjects();
         RenderAvailable();
+    }
+
+    void OnClaudeChanged()
+    {
+        if (IsDisposed) return;
+        if (InvokeRequired) { BeginInvoke(new Action(OnClaudeChanged)); return; }
+        Render();
     }
 
     void RenderAvailable()
@@ -154,7 +176,7 @@ sealed class MainForm : Form
     void FitLabels()
     {
         var width = Math.Max(300, ClientSize.Width - 40);
-        _incoming.MaximumSize = _unsent.MaximumSize = _request.MaximumSize = _peer.MaximumSize = _result.MaximumSize = new Size(width, 0);
+        _incoming.MaximumSize = _unsent.MaximumSize = _request.MaximumSize = _peer.MaximumSize = _claude.MaximumSize = _result.MaximumSize = new Size(width, 0);
     }
 
     async Task PrepareAsync()
@@ -264,6 +286,7 @@ sealed class MainForm : Form
             return;
         }
         var st = c.Status;
+        RenderClaude(c);
         var request = st?.Requests.FirstOrDefault();
         _merge.Visible = c.Options.CanResolve && (c.LastResult?.Status == OpStatus.Conflict || request != null);
         _merge.Enabled = enabled;
@@ -300,6 +323,23 @@ sealed class MainForm : Form
             ? $"У тебя не отправлено: {Ru.Files(st.UnsentFiles.Count)} ({string.Join(", ", st.UnsentFiles.Take(3))}{(st.UnsentFiles.Count > 3 ? " и ещё " + (st.UnsentFiles.Count - 3) : "")})"
             : "";
         _receive.Text = st is { State: SyncState.Incoming or SyncState.Both } ? "Получить ↓" : "Получить";
+    }
+
+    /// <summary>The integrator's line about Claude Code: signed in, or not and the button to sign in.</summary>
+    void RenderClaude(ProjectController c)
+    {
+        var claude = _app.Claude;
+        var show = c.Options.CanResolve || claude?.Installed == true;
+        _claude.Visible = show;
+        _claudeLogin.Visible = show && claude is { Installed: true, LoggedIn: false };
+        if (!show) return;
+        (_claude.Text, _claude.ForeColor) = claude switch
+        {
+            null => ("Claude Code: проверяю…", Color.DimGray),
+            { Installed: false } => ("Claude Code не найден: спорное при слиянии уйдёт просьбой к другу.", Color.FromArgb(170, 90, 0)),
+            { LoggedIn: true } => ($"Claude Code: вход выполнен ✓ ({claude.Version})", Color.FromArgb(30, 110, 50)),
+            _ => ("Claude Code не вошёл в аккаунт: «Слить с Claude» не сработает. Нажми «Войти в Claude».", Color.FromArgb(170, 30, 30)),
+        };
     }
 
     /// <summary>" (2 мин 05 с)" since the start of the operation.</summary>
