@@ -241,6 +241,10 @@ public static class ClaudeCli
                         {
                             var httpStatus = e.TryGetProperty("api_error_status", out var ae) && ae.ValueKind == JsonValueKind.Number ? ae.GetInt32() : 0;
                             var reason = e.TryGetProperty("terminal_reason", out var tr) ? tr.GetString() : null;
+                            // An expired sign-in comes without an HTTP status, only as text ("OAuth session expired…").
+                            if (httpStatus == 0 && lastText is { } t && (t.Contains("authenticate", StringComparison.OrdinalIgnoreCase) ||
+                                    t.Contains("OAuth", StringComparison.OrdinalIgnoreCase) || t.Contains("login", StringComparison.OrdinalIgnoreCase)))
+                                httpStatus = 401;
                             error ??= httpStatus switch
                             {
                                 429 => limit is { } l ? $"Лимит Claude до {l.ToLocalTime():HH:mm}" : "Кончился лимит Claude",
