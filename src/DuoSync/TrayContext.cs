@@ -45,6 +45,13 @@ sealed class TrayContext : ApplicationContext
         Settings = AppSettings.Load();
         EnsureIdentity();
         AutoStart.Apply(Settings.AutoStart);
+        // One folder is one project, however its path was written (case, a trailing separator).
+        var unique = Settings.Projects.GroupBy(p => SamePath(p.Path), StringComparer.OrdinalIgnoreCase).Select(g => g.First()).ToList();
+        if (unique.Count != Settings.Projects.Count)
+        {
+            Settings.Projects = unique;
+            Settings.Save();
+        }
         foreach (var p in Settings.Projects.Where(p => Directory.Exists(p.Path)))
             Controllers.Add(NewController(p));
 
@@ -943,10 +950,31 @@ sealed class TrayContext : ApplicationContext
         return s;
     }
 
+    /// <summary>A folder path in one spelling: full, without a trailing separator.</summary>
+    static string SamePath(string path)
+    {
+        try { return Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar); }
+        catch (Exception e) when (e is ArgumentException or NotSupportedException or PathTooLongException) { return path; }
+    }
+
+    /// <summary>«Убрать из списка»: the program forgets the project; the folder and everything in it stay on disk.</summary>
+    public void RemoveProject(ProjectController c)
+    {
+        if (c.Busy) return;
+        Controllers.Remove(c);
+        Settings.Projects.Remove(c.Entry);
+        Settings.Save();
+        AppLog.Write($"project removed from the list: {c.Entry.Path}");
+        _form?.ReloadProjects();
+        _nextDiscovery = DateTime.MinValue;
+        _ = PollAsync();
+    }
+
     ProjectController AddProject(string dir)
     {
-        var existing = Controllers.FirstOrDefault(c => string.Equals(c.Entry.Path, dir, StringComparison.OrdinalIgnoreCase));
+        var existing = Controllers.FirstOrDefault(c => string.Equals(SamePath(c.Entry.Path), SamePath(dir), StringComparison.OrdinalIgnoreCase));
         if (existing != null) { ShowWindow(); return existing; }
+        dir = SamePath(dir);
         var entry = new ProjectEntry { Path = dir, Name = Path.GetFileName(dir.TrimEnd(Path.DirectorySeparatorChar, '/')) };
         Settings.Projects.Add(entry);
         Settings.Save();

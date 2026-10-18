@@ -7,8 +7,10 @@ namespace DuoSync;
 sealed class MainForm : Form
 {
     readonly TrayContext _app;
-    readonly ComboBox _projects = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 260 };
+    readonly ComboBox _projects = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 340, DropDownWidth = 520 };
     readonly Button _add = new() { Text = "Добавить проект…", AutoSize = true };
+    /// <summary>The selected project: open its folder, or remove it from the list (the folder stays).</summary>
+    readonly Button _more = new() { Text = "⋯", Width = 34 };
     /// <summary>Projects on GitHub that are not on this computer: one «Скачать» button each.</summary>
     readonly FlowLayoutPanel _available = new() { Dock = DockStyle.Fill, AutoSize = true, Visible = false };
     readonly Label _incoming = new() { AutoSize = true, Font = new Font("Segoe UI", 10.5f, FontStyle.Bold) };
@@ -43,7 +45,7 @@ sealed class MainForm : Form
         Icon = Icons.App;
 
         var top = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = false };
-        top.Controls.AddRange(new Control[] { new Label { Text = "Проект:", AutoSize = true, Padding = new Padding(0, 6, 0, 0) }, _projects, _add });
+        top.Controls.AddRange(new Control[] { new Label { Text = "Проект:", AutoSize = true, Padding = new Padding(0, 6, 0, 0) }, _projects, _more, _add });
 
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
         buttons.Controls.AddRange(new Control[] { _prepare, _claudeLogin, _merge, _receive, _send, _undo, _check, _todo, _report });
@@ -68,6 +70,21 @@ sealed class MainForm : Form
 
         _projects.SelectedIndexChanged += async (_, _) => await ShowProjectAsync();
         _add.Click += (_, _) => _app.Guard(() => _app.AddProjectInteractiveAsync(this));
+        _more.Click += (_, _) =>
+        {
+            if (Current is not { } c) return;
+            var menu = new ContextMenuStrip();
+            menu.Items.Add("Открыть папку проекта", null, (_, _) =>
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("explorer.exe", $"\"{c.Entry.Path}\"") { UseShellExecute = true }));
+            menu.Items.Add("Убрать из списка (папка останется на диске)…", null, (_, _) =>
+            {
+                if (c.Busy) { ShowNote("Сейчас идёт операция с этим проектом. Убери его, когда она закончится.", error: true); return; }
+                if (MessageBox.Show(this, $"Убрать «{c.Entry.Name}» из списка DuoSync?\n\nПапка {c.Entry.Path} и всё в ней останутся на диске. Вернуть можно через «Добавить проект…» → «Подключить папку».",
+                        "Убрать из списка", MessageBoxButtons.OKCancel, MessageBoxIcon.Question) == DialogResult.OK)
+                    _app.RemoveProject(c);
+            });
+            menu.Show(_more, new Point(0, _more.Height));
+        };
         _app.AvailableChanged += RenderAvailable;
         Disposed += (_, _) => _app.AvailableChanged -= RenderAvailable;
         _receive.Click += async (_, _) => await RunAsync(e => e.ReceiveAsync());
@@ -214,7 +231,9 @@ sealed class MainForm : Form
 
     sealed record ProjectItem(ProjectController Controller)
     {
-        public override string ToString() => Controller.Entry.Name;
+        /// <summary>Two projects with one name (two downloads in different places) show where each one lies.</summary>
+        public string? Where { get; init; }
+        public override string ToString() => Where == null ? Controller.Entry.Name : $"{Controller.Entry.Name} ({Where})";
     }
 
     public void ReloadProjects()
@@ -223,7 +242,8 @@ sealed class MainForm : Form
         _projects.Items.Clear();
         foreach (var c in _app.Controllers)
         {
-            _projects.Items.Add(new ProjectItem(c));
+            var twin = _app.Controllers.Count(o => string.Equals(o.Entry.Name, c.Entry.Name, StringComparison.OrdinalIgnoreCase)) > 1;
+            _projects.Items.Add(new ProjectItem(c) { Where = twin ? Path.GetDirectoryName(c.Entry.Path) : null });
             c.Changed -= OnControllerChanged;
             c.Changed += OnControllerChanged;
         }
