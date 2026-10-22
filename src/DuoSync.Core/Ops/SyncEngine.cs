@@ -205,10 +205,10 @@ public sealed class SyncEngine
 
     // ------------------------------------------------------------------ Отправить
 
-    public Task<OpResult> SendAsync(string? message, IReadOnlyList<string>? extraPaths = null, CancellationToken ct = default)
-        => Locked(() => SendCoreAsync(message, extraPaths, ct), ct);
+    public Task<OpResult> SendAsync(string? message, CancellationToken ct = default)
+        => Locked(() => SendCoreAsync(message, ct), ct);
 
-    async Task<OpResult> SendCoreAsync(string? message, IReadOnlyList<string>? extraPaths, CancellationToken ct)
+    async Task<OpResult> SendCoreAsync(string? message, CancellationToken ct)
     {
         var pre = await PreflightAsync(ct);
         if (pre != null) return pre;
@@ -220,7 +220,7 @@ public sealed class SyncEngine
         }
 
         var text = string.IsNullOrWhiteSpace(message) ? await AutoSummaryAsync() : message.Trim();
-        await _snapshots.SnapshotAsync(text, "send", extraPaths);
+        await _snapshots.SnapshotAsync(text, "send");
 
         for (int attempt = 0; attempt < 3; attempt++)
         {
@@ -298,9 +298,7 @@ public sealed class SyncEngine
             if (e.Kind == StatusKind.Ignored) continue;
             if (e.Kind == StatusKind.Untracked)
             {
-                if (e.Path.StartsWith("Assets/", StringComparison.Ordinal) || e.Path.StartsWith("Packages/", StringComparison.Ordinal) ||
-                    e.Path.StartsWith("ProjectSettings/", StringComparison.Ordinal))
-                    changes[e.Path] = 'A';
+                changes[e.Path] = 'A';
                 continue;
             }
             changes[e.Path] = e.XY.Contains('D') ? 'D' : changes.TryGetValue(e.Path, out var was) && was == 'A' ? 'A' : 'M';

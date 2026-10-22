@@ -30,7 +30,6 @@ public sealed record ProjectStatus(SyncState State)
 /// </summary>
 public sealed class StatusChecker
 {
-    static readonly string[] UnityRoots = { "Assets/", "Packages/", "ProjectSettings/" };
     readonly Repo _repo;
     readonly bool _integrator;
     readonly string? _myName;
@@ -100,7 +99,6 @@ public sealed class StatusChecker
         foreach (var e in await _repo.StatusAsync(background: true))
         {
             if (e.Kind is Git.StatusKind.Ignored) continue;
-            if (e.Kind == Git.StatusKind.Untracked && !UnityRoots.Any(r => e.Path.StartsWith(r, StringComparison.Ordinal))) continue;
             unsent.Add(e.Path);
         }
 

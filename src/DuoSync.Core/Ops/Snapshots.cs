@@ -8,26 +8,20 @@ namespace DuoSync.Core.Ops;
 public sealed class Snapshots
 {
     public const int KeepSaveRefs = 50;
-    static readonly string[] UnityRoots = { "Assets", "Packages", "ProjectSettings" };
 
     readonly Repo _repo;
 
     public Snapshots(Repo repo) => _repo = repo;
 
     /// <summary>
-    /// Commits everything that belongs to the Unity project plus changes to already tracked files.
-    /// New files outside Assets/Packages/ProjectSettings are added only when listed in <paramref name="extraPaths"/>.
+    /// Commits every change in the folder that .gitignore does not exclude: the Unity project and also new files
+    /// elsewhere (.claude/skills, Tools, notes). .gitignore is the only filter; .gitattributes decides what goes to LFS.
     /// Returns the new HEAD (or the old one when there was nothing to commit).
     /// </summary>
-    public async Task<string?> SnapshotAsync(string message, string trailer, IReadOnlyList<string>? extraPaths = null)
+    public async Task<string?> SnapshotAsync(string message, string trailer)
     {
         var git = _repo.Git;
-        var roots = UnityRoots.Where(r => Directory.Exists(Path.Combine(_repo.Root, r))).ToList();
-        if (roots.Count > 0)
-            await git.RunCheckedAsync(new[] { "add", "-A", "--" }.Concat(roots));
-        await git.RunCheckedAsync("add", "-u");
-        if (extraPaths is { Count: > 0 })
-            await git.RunCheckedAsync(new[] { "add", "--" }.Concat(extraPaths));
+        await git.RunCheckedAsync(new[] { "add", "-A" }, new GitRunOptions { Timeout = TimeSpan.FromMinutes(10) });
 
         var head = await _repo.HeadAsync();
         if (head != null)

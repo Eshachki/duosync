@@ -81,7 +81,7 @@ public static class Templates
         "# Мусор системы, git и программ",
         "*.log", "*.tmp", "*.blend1", "*.blend1.meta", "*.stackdump", "*.dmp", "sysinfo.txt", "mono_crash.*",
         ".DS_Store", "._*", "Thumbs.db", "ehthumbs.db", "[Dd]esktop.ini", "$RECYCLE.BIN/",
-        "*.orig", "*.BACKUP.*", "*.BASE.*", "*.LOCAL.*", "*.REMOTE.*", ".env",
+        "*.orig", "*.BACKUP.*", "*.BASE.*", "*.LOCAL.*", "*.REMOTE.*", ".env", "__pycache__/", "*.py[cod]",
         "/.plastic/", "/ignore.conf", "/.collabignore",
         "# Покупные пакеты и свалки людей: IGNORE_FOLDER вместе с .meta, иначе Unity создаст его заново и он уедет один",
         "*.unitypackage", "*.unitypackage.meta",

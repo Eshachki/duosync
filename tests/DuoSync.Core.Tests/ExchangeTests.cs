@@ -276,6 +276,29 @@ public class ExchangeTests
     }
 
     [Fact]
+    public async Task New_files_outside_the_unity_folders_reach_the_friend()
+    {
+        await using var sb = await CreateAsync();
+        // The first send already happened (the sandbox seed); these files appear later.
+        sb.Friend.Write("Tools/make_sfx.py", "print('sfx')\n");
+        sb.Friend.Write(".claude/skills/project-tools/SKILL.md", "# tools\n");
+        sb.Friend.Write("Tools/debug.log", "local only\n");
+        sb.Friend.Write("Tools/__pycache__/make_sfx.cpython-310.pyc", "bytecode");
+        Assert.Contains("Tools/make_sfx.py", (await sb.Friend.Engine.CheckStatusAsync()).UnsentFiles);
+
+        var sent = await sb.Friend.Engine.SendAsync("Скрипты");
+        var got = await sb.Owner.Engine.ReceiveAsync();
+
+        Assert.Equal(OpStatus.Done, sent.Status);
+        Assert.Equal(OpStatus.Done, got.Status);
+        Assert.Equal("print('sfx')\n", sb.Owner.Read("Tools/make_sfx.py"));
+        Assert.True(sb.Owner.Exists(".claude/skills/project-tools/SKILL.md"));
+        Assert.False(sb.Owner.Exists("Tools/debug.log"));
+        Assert.False(sb.Owner.Exists("Tools/__pycache__/make_sfx.cpython-310.pyc"));
+        Assert.Empty((await sb.Friend.Engine.CheckStatusAsync()).UnsentFiles);
+    }
+
+    [Fact]
     public async Task Nothing_to_send_when_nothing_changed()
     {
         await using var sb = await CreateAsync();
